@@ -2,6 +2,8 @@ use anyhow::{Context, Result};
 use std::path::PathBuf;
 use tracing::warn;
 
+pub const DEFAULT_SYMBOLS: &str = "BTC,ETH,SOL,XRP";
+
 #[derive(Clone, Debug)]
 pub struct Settings {
     pub dry_run: bool,
@@ -35,13 +37,8 @@ impl Settings {
             dry_run: env_bool("DRY_RUN", true),
             poll_interval_ms: env_parse("POLL_INTERVAL_MS", 5_000)?,
             state_path: PathBuf::from(env_string("STATE_PATH", "./data/state.json")),
-            symbols: env_string("SYMBOLS", "BTC")
-                .split(',')
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(str::to_string)
-                .collect(),
-            max_markets: env_parse("MAX_MARKETS", 6)?,
+            symbols: parse_symbols(&env_string("SYMBOLS", DEFAULT_SYMBOLS)),
+            max_markets: env_parse("MAX_MARKETS", 12)?,
 
             allow_live_buys: env_bool("ALLOW_LIVE_BUYS", false),
             allow_live_sells: env_bool("ALLOW_LIVE_SELLS", false),
@@ -66,6 +63,8 @@ impl Settings {
     pub fn log_safety_summary(&self) {
         warn!(
             dry_run = self.dry_run,
+            symbols = ?self.symbols,
+            max_markets = self.max_markets,
             allow_live_buys = self.allow_live_buys,
             allow_live_sells = self.allow_live_sells,
             auto_take_profit = self.auto_take_profit,
@@ -74,6 +73,18 @@ impl Settings {
             "safety summary"
         );
     }
+}
+
+fn parse_symbols(raw: &str) -> Vec<String> {
+    let mut symbols = raw
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_ascii_uppercase())
+        .collect::<Vec<_>>();
+    symbols.sort();
+    symbols.dedup();
+    symbols
 }
 
 fn env_string(key: &str, default: &str) -> String {
