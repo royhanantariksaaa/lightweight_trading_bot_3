@@ -42,6 +42,13 @@ pub struct Settings {
     pub snipe_liquidity_scale_usd: f64,
     pub snipe_max_position_usd: f64,
     pub snipe_max_signals: usize,
+
+    pub live_order_confirm: bool,
+    pub live_executor_command: String,
+    pub live_max_order_usd: f64,
+    pub live_min_seconds_to_expiry: i64,
+    pub live_order_cooldown_ms: i64,
+    pub live_order_type: String,
 }
 
 impl Settings {
@@ -83,6 +90,13 @@ impl Settings {
             snipe_liquidity_scale_usd: env_parse("SNIPE_LIQUIDITY_SCALE_USD", 5_000.0)?,
             snipe_max_position_usd: env_parse("SNIPE_MAX_POSITION_USD", 5.0)?,
             snipe_max_signals: env_parse("SNIPE_MAX_SIGNALS", 8)?,
+
+            live_order_confirm: env_bool("LIVE_ORDER_CONFIRM", false),
+            live_executor_command: env_string("LIVE_EXECUTOR_COMMAND", ""),
+            live_max_order_usd: env_parse("LIVE_MAX_ORDER_USD", 5.0)?,
+            live_min_seconds_to_expiry: env_parse("LIVE_MIN_SECONDS_TO_EXPIRY", 3)?,
+            live_order_cooldown_ms: env_parse("LIVE_ORDER_COOLDOWN_MS", 20_000)?,
+            live_order_type: env_string("LIVE_ORDER_TYPE", "GTC"),
         })
     }
 
@@ -94,6 +108,9 @@ impl Settings {
             dashboard = %format!("{}:{}", self.dashboard_host, self.dashboard_port),
             allow_live_buys = self.allow_live_buys,
             allow_live_sells = self.allow_live_sells,
+            live_order_confirm = self.live_order_confirm,
+            live_executor_configured = !self.live_executor_command.trim().is_empty(),
+            live_max_order_usd = self.live_max_order_usd,
             auto_take_profit = self.auto_take_profit,
             auto_exit_no_edge = self.auto_exit_no_edge,
             auto_redeem = self.auto_redeem,
