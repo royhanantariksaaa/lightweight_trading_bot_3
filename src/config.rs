@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use std::path::PathBuf;
 use tracing::warn;
 
@@ -43,12 +43,15 @@ pub struct Settings {
     pub snipe_max_position_usd: f64,
     pub snipe_max_signals: usize,
 
-    pub live_order_confirm: bool,
     pub live_executor_command: String,
     pub live_max_order_usd: f64,
     pub live_min_seconds_to_expiry: i64,
     pub live_order_cooldown_ms: i64,
     pub live_order_type: String,
+    pub polymarket_clob_host: String,
+    pub polymarket_chain_id: u64,
+    pub polymarket_signature_type: Option<u8>,
+    pub polymarket_funder_address: String,
 }
 
 impl Settings {
@@ -91,12 +94,18 @@ impl Settings {
             snipe_max_position_usd: env_parse("SNIPE_MAX_POSITION_USD", 5.0)?,
             snipe_max_signals: env_parse("SNIPE_MAX_SIGNALS", 8)?,
 
-            live_order_confirm: env_bool("LIVE_ORDER_CONFIRM", false),
-            live_executor_command: env_string("LIVE_EXECUTOR_COMMAND", ""),
+            live_executor_command: env_string(
+                "LIVE_EXECUTOR_COMMAND",
+                "python scripts/live_clob_v2_order.py",
+            ),
             live_max_order_usd: env_parse("LIVE_MAX_ORDER_USD", 5.0)?,
             live_min_seconds_to_expiry: env_parse("LIVE_MIN_SECONDS_TO_EXPIRY", 3)?,
             live_order_cooldown_ms: env_parse("LIVE_ORDER_COOLDOWN_MS", 20_000)?,
             live_order_type: env_string("LIVE_ORDER_TYPE", "GTC"),
+            polymarket_clob_host: env_string("POLYMARKET_CLOB_HOST", "https://clob.polymarket.com"),
+            polymarket_chain_id: env_parse("POLYMARKET_CHAIN_ID", 137)?,
+            polymarket_signature_type: env_optional_parse("SIGNATURE_TYPE")?,
+            polymarket_funder_address: env_string("FUNDER_ADDRESS", ""),
         })
     }
 
@@ -108,9 +117,12 @@ impl Settings {
             dashboard = %format!("{}:{}", self.dashboard_host, self.dashboard_port),
             allow_live_buys = self.allow_live_buys,
             allow_live_sells = self.allow_live_sells,
-            live_order_confirm = self.live_order_confirm,
             live_executor_configured = !self.live_executor_command.trim().is_empty(),
             live_max_order_usd = self.live_max_order_usd,
+            polymarket_clob_host = %self.polymarket_clob_host,
+            polymarket_chain_id = self.polymarket_chain_id,
+            signature_type_configured = self.polymarket_signature_type.is_some(),
+            funder_configured = !self.polymarket_funder_address.trim().is_empty(),
             auto_take_profit = self.auto_take_profit,
             auto_exit_no_edge = self.auto_exit_no_edge,
             auto_redeem = self.auto_redeem,
@@ -141,7 +153,12 @@ fn env_string(key: &str, default: &str) -> String {
 fn env_bool(key: &str, default: bool) -> bool {
     std::env::var(key)
         .ok()
-        .map(|value| matches!(value.trim().to_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .map(|value| {
+            matches!(
+                value.trim().to_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
         .unwrap_or(default)
 }
 
@@ -153,7 +170,21 @@ where
     match std::env::var(key) {
         Ok(value) => value
             .parse::<T>()
-            .with_context(|| format!("failed to parse env {key}={value}")),
+            .map_err(|error| anyhow::anyhow!("failed to parse env {key}={value}: {error}")),
         Err(_) => Ok(default),
+    }
+}
+
+fn env_optional_parse<T>(key: &str) -> Result<Option<T>>
+where
+    T: std::str::FromStr,
+    T::Err: std::fmt::Display,
+{
+    match std::env::var(key) {
+        Ok(value) if !value.trim().is_empty() => value
+            .parse::<T>()
+            .map(Some)
+            .map_err(|error| anyhow::anyhow!("failed to parse env {key}={value}: {error}")),
+        _ => Ok(None),
     }
 }

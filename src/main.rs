@@ -1,5 +1,6 @@
 mod config;
 mod dashboard;
+mod live;
 mod polymarket;
 mod snipe;
 mod state;
@@ -9,15 +10,16 @@ use anyhow::Result;
 use chrono::Utc;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tokio::time::{sleep, Duration};
+use tokio::time::{Duration, sleep};
 use tracing::{info, warn};
 
 use crate::config::Settings;
-use crate::dashboard::{serve_dashboard, DashboardState, SharedDashboard};
+use crate::dashboard::{DashboardState, SharedDashboard, serve_dashboard};
+use crate::live::{buy_request_from_snipe, post_live_order};
 use crate::polymarket::PolymarketClient;
 use crate::snipe::find_last_minute_5m_snipes;
-use crate::state::BotState;
-use crate::strategy::{evaluate_strategy, Decision, StrategyContext};
+use crate::state::{BotState, now_ms};
+use crate::strategy::{Decision, StrategyContext, evaluate_strategy};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -65,6 +67,7 @@ async fn main() -> Result<()> {
 async fn run_bot(settings: Settings, dashboard_state: SharedDashboard) -> Result<()> {
     let mut state = BotState::load_or_default(&settings.state_path).await?;
     let polymarket = PolymarketClient::new();
+    let mut last_live_order_ms = 0_i64;
 
     loop {
         if settings.enable_last_minute_5m_snipe {
@@ -74,8 +77,36 @@ async fn run_bot(settings: Settings, dashboard_state: SharedDashboard) -> Result
                     for signal in &signals {
                         if signal.dry_run {
                             info!(?signal, "DRY RUN: last-minute 5m snipe candidate");
+                        } else if now_ms() - last_live_order_ms < settings.live_order_cooldown_ms {
+                            info!(?signal, "live order cooldown active: skipping candidate");
                         } else {
-                            warn!(?signal, "LIVE BUY ENABLED but CLOB execution is not wired in this scaffold");
+                            match buy_request_from_snipe(&settings, signal) {
+                                Ok(request) => match post_live_order(&settings, &request).await {
+                                    Ok(response) if response.success => {
+                                        let order_id = response
+                                            .order_id
+                                            .unwrap_or_else(|| format!("clob-{}", now_ms()));
+                                        state.record_bot_order_with_id(
+                                            order_id,
+                                            signal.market_slug.clone(),
+                                            signal.outcome.clone(),
+                                            signal.price,
+                                            request.size,
+                                        );
+                                        last_live_order_ms = now_ms();
+                                        info!(?request, raw = ?response.raw, "placed live Polymarket CLOB V2 buy order");
+                                    }
+                                    Ok(response) => {
+                                        warn!(?request, raw = ?response.raw, "Polymarket CLOB V2 order was not accepted");
+                                    }
+                                    Err(error) => {
+                                        warn!(%error, ?request, "failed to place live Polymarket CLOB V2 order");
+                                    }
+                                },
+                                Err(error) => {
+                                    warn!(%error, ?signal, "blocked live snipe candidate");
+                                }
+                            }
                         }
                     }
 
@@ -104,8 +135,16 @@ async fn run_bot(settings: Settings, dashboard_state: SharedDashboard) -> Result
                 if settings.dry_run || !settings.allow_live_buys {
                     info!(?plan, "DRY RUN / buys disabled: would place maker buy");
                 } else {
-                    warn!(?plan, "live buy execution not wired yet");
-                    state.record_bot_order(plan.market_slug, plan.outcome, plan.limit_price, plan.shares);
+                    warn!(
+                        ?plan,
+                        "strategy live buy needs a CLOB token_id; only snipe scanner markets currently carry token ids"
+                    );
+                    state.record_bot_order(
+                        plan.market_slug,
+                        plan.outcome,
+                        plan.limit_price,
+                        plan.shares,
+                    );
                 }
             }
             Decision::CancelOrder { order_id, reason } => {
@@ -118,7 +157,10 @@ async fn run_bot(settings: Settings, dashboard_state: SharedDashboard) -> Result
             }
             Decision::SellBotOwnedPosition(plan) => {
                 if settings.dry_run || !settings.allow_live_sells {
-                    info!(?plan, "DRY RUN / sells disabled: would sell bot-owned position");
+                    info!(
+                        ?plan,
+                        "DRY RUN / sells disabled: would sell bot-owned position"
+                    );
                 } else if !state.bot_owns_position(&plan.market_slug, &plan.outcome) {
                     warn!(?plan, "blocked sell: position is not bot-owned");
                 } else {

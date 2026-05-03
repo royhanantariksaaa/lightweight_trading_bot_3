@@ -1,0 +1,591 @@
+:root {
+  font-family: "Inter", "Manrope", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color: #eef3f8;
+  background: #0f151b;
+  --ink: #eef3f8;
+  --muted: #90a2b4;
+  --faint: #607284;
+  --panel: #12191f;
+  --panel-2: #0f151a;
+  --panel-3: #18222b;
+  --line: #27313a;
+  --line-strong: #3a4855;
+  --green: #22a06b;
+  --green-soft: rgba(34, 160, 107, 0.15);
+  --red: #d33b3b;
+  --red-soft: rgba(211, 59, 59, 0.16);
+  --amber: #f0a329;
+  --blue: #58a6ff;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  width: 100%;
+  min-width: 320px;
+  height: 100%;
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  background:
+    radial-gradient(circle at 12% 0%, rgba(88, 166, 255, 0.08), transparent 26rem),
+    linear-gradient(180deg, #111923 0%, #0b1117 100%);
+}
+
+button {
+  font: inherit;
+}
+
+.terminal {
+  height: 100vh;
+  min-height: 100vh;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: 0.55rem;
+  padding: 0.6rem;
+  color: var(--ink);
+  overflow: auto;
+}
+
+.top-strip,
+.bottom-line,
+.symbol-panel {
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 12px;
+  background: rgba(18, 25, 31, 0.96);
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.22);
+}
+
+.top-strip {
+  min-height: 3.9rem;
+  display: grid;
+  grid-template-columns: minmax(13.5rem, 17rem) minmax(0, 1fr);
+  align-items: stretch;
+}
+
+.identity {
+  display: flex;
+  align-items: center;
+  gap: 0.62rem;
+  padding: 0.55rem 0.72rem;
+  border-right: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.identity > span {
+  width: 2.25rem;
+  height: 2.25rem;
+  display: grid;
+  place-items: center;
+  color: white;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 9px;
+  background: linear-gradient(180deg, #1d9a74, #097250);
+  font-weight: 900;
+}
+
+.identity strong,
+.identity small,
+.metric span,
+.metric strong,
+.symbol-code,
+.symbol-head strong,
+.symbol-panel p,
+.market-meta span,
+.signal-zone span {
+  display: block;
+}
+
+.identity strong {
+  font-size: 0.98rem;
+}
+
+.identity small {
+  font-size: 0.78rem;
+}
+
+.identity small,
+.metric span,
+.symbol-panel p,
+.market-meta,
+.signal-zone,
+.empty-market,
+.reference-grid span {
+  color: var(--muted);
+}
+
+.runtime {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(5, minmax(5.4rem, 1fr)) minmax(4.9rem, auto);
+}
+
+.metric {
+  min-width: 0;
+  display: grid;
+  align-content: center;
+  gap: 0.12rem;
+  padding: 0.48rem 0.62rem;
+  border-right: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.metric span {
+  color: var(--faint);
+  font-size: 0.61rem;
+  font-weight: 850;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.metric strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 1rem;
+}
+
+.metric.hot strong {
+  color: var(--green);
+}
+
+.runtime button {
+  min-width: 4.9rem;
+  border: 0;
+  border-left: 1px solid rgba(255, 255, 255, 0.07);
+  background: var(--panel-2);
+  color: var(--ink);
+  cursor: pointer;
+  font-size: 0.92rem;
+}
+
+.runtime button:hover {
+  background: var(--panel-3);
+}
+
+.symbol-grid {
+  min-height: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-rows: repeat(2, minmax(18.25rem, 1fr));
+  gap: 0.55rem;
+}
+
+.symbol-panel {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto auto auto auto minmax(3rem, auto);
+  align-content: start;
+  overflow: clip;
+}
+
+.symbol-panel.hot {
+  border-color: rgba(240, 163, 41, 0.72);
+}
+
+.symbol-head {
+  min-width: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: 0.7rem;
+  padding: 0.78rem 0.95rem 0.66rem;
+  border-bottom: 0;
+}
+
+.symbol-head > div {
+  min-width: 0;
+  flex: 1;
+}
+
+.coin-logo,
+.coin-fallback {
+  width: 3.35rem;
+  height: 3.35rem;
+  flex: none;
+  border-radius: 10px;
+  object-fit: cover;
+  background: #ff991f;
+}
+
+.coin-fallback {
+  display: grid;
+  place-items: center;
+  color: white;
+  font-size: 1.5rem;
+  font-weight: 950;
+}
+
+.symbol-code,
+.time-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.55rem;
+  padding: 0 0.42rem;
+  font-size: 0.68rem;
+  font-weight: 900;
+}
+
+.symbol-code {
+  display: none;
+  color: white;
+  background: #097250;
+}
+
+.time-chip {
+  flex: none;
+  margin-left: auto;
+  color: #ffd27c;
+  border-radius: 7px;
+  background: rgba(240, 163, 41, 0.14);
+}
+
+.symbol-head strong {
+  min-width: 0;
+  margin-top: 0.08rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: normal;
+  font-size: clamp(1rem, 1.08vw, 1.22rem);
+  line-height: 1.12;
+}
+
+.symbol-head small {
+  display: block;
+  margin-top: 0.26rem;
+  color: var(--muted);
+  font-size: 0.78rem;
+  line-height: 1.25;
+}
+
+.reference-grid,
+.odds-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1px;
+  background: var(--line);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.reference-grid div,
+.odds-grid div {
+  min-width: 0;
+  padding: 0.64rem 0.95rem;
+  background: var(--panel);
+}
+
+.reference-grid span,
+.odds-grid span {
+  font-size: 0.68rem;
+  font-weight: 850;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.reference-grid strong {
+  display: block;
+  margin-top: 0.24rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #8d99a8;
+  font-size: clamp(1.02rem, 1.15vw, 1.28rem);
+  line-height: 1;
+}
+
+.current-reference strong {
+  color: #ff9f1f;
+}
+
+.current-reference em {
+  display: inline-block;
+  margin-left: 0.32rem;
+  color: var(--faint);
+  font-style: normal;
+  font-size: 0.66rem;
+}
+
+.speed-line {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.32rem;
+  margin-top: 0.22rem;
+  color: var(--muted);
+  font-size: 0.64rem;
+  font-weight: 800;
+}
+
+.speed-line b {
+  color: var(--faint);
+  font: inherit;
+}
+
+.current-reference.positive em {
+  color: #4bd187;
+}
+
+.current-reference.negative em {
+  color: #ff5e62;
+}
+
+.speed-line.positive {
+  color: #4bd187;
+}
+
+.speed-line.negative {
+  color: #ff5e62;
+}
+
+.odds-grid strong {
+  display: block;
+  margin-top: 0.18rem;
+  font-size: clamp(1.62rem, 2.1vw, 2.15rem);
+  line-height: 0.95;
+}
+
+.odds-grid div:first-child strong {
+  color: #62d394;
+}
+
+.odds-grid div:last-child strong {
+  color: #ff7070;
+}
+
+.odds-grid small {
+  display: block;
+  margin-top: 0.28rem;
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-weight: 700;
+}
+
+.market-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.6rem;
+  padding: 0.52rem 0.95rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+  font-size: 0.74rem;
+  font-weight: 750;
+}
+
+.signal-zone {
+  display: grid;
+  align-content: start;
+  gap: 0.28rem;
+  padding: 0.58rem 0.95rem;
+  font-size: 0.8rem;
+}
+
+.signal-row {
+  display: grid;
+  grid-template-columns: 3rem minmax(0, 1fr) auto;
+  gap: 0.42rem;
+  align-items: center;
+  padding: 0.34rem 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.signal-row strong {
+  color: var(--amber);
+}
+
+.empty-market {
+  min-height: 8rem;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  text-align: center;
+}
+
+.bottom-line {
+  min-height: 2rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.44rem 0.65rem;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.error-text {
+  color: var(--red);
+}
+
+@media (max-width: 1180px) {
+  .top-strip {
+    grid-template-columns: 1fr;
+  }
+
+  .identity {
+    border-right: 0;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+  }
+}
+
+@media (max-height: 820px) and (min-width: 761px) {
+  .terminal {
+    gap: 0.45rem;
+    padding: 0.48rem;
+  }
+
+  .top-strip {
+    min-height: 3.2rem;
+  }
+
+  .identity {
+    padding: 0.42rem 0.62rem;
+  }
+
+  .identity > span {
+    width: 2rem;
+    height: 2rem;
+    border-radius: 8px;
+    font-size: 0.86rem;
+  }
+
+  .identity strong {
+    font-size: 0.9rem;
+  }
+
+  .identity small {
+    font-size: 0.72rem;
+  }
+
+  .metric {
+    padding: 0.36rem 0.55rem;
+  }
+
+  .metric span {
+    font-size: 0.56rem;
+  }
+
+  .metric strong {
+    font-size: 0.9rem;
+  }
+
+  .runtime button {
+    font-size: 0.86rem;
+  }
+
+  .symbol-grid {
+    grid-template-rows: repeat(2, minmax(15.9rem, 1fr));
+    gap: 0.45rem;
+  }
+
+  .symbol-head {
+    gap: 0.58rem;
+    padding: 0.62rem 0.78rem 0.5rem;
+  }
+
+  .coin-logo,
+  .coin-fallback {
+    width: 2.8rem;
+    height: 2.8rem;
+    border-radius: 9px;
+  }
+
+  .coin-fallback {
+    font-size: 1.25rem;
+  }
+
+  .time-chip {
+    min-height: 1.28rem;
+    padding: 0 0.36rem;
+    font-size: 0.62rem;
+  }
+
+  .symbol-head strong {
+    font-size: 0.98rem;
+  }
+
+  .symbol-head small {
+    margin-top: 0.16rem;
+    font-size: 0.72rem;
+  }
+
+  .reference-grid div,
+  .odds-grid div {
+    padding: 0.48rem 0.78rem;
+  }
+
+  .reference-grid span,
+  .odds-grid span {
+    font-size: 0.62rem;
+  }
+
+  .reference-grid strong {
+    margin-top: 0.16rem;
+    font-size: 1rem;
+  }
+
+  .current-reference em {
+    font-size: 0.58rem;
+  }
+
+  .speed-line {
+    gap: 0.22rem;
+    margin-top: 0.16rem;
+    font-size: 0.56rem;
+  }
+
+  .odds-grid strong {
+    margin-top: 0.12rem;
+    font-size: 1.62rem;
+  }
+
+  .odds-grid small {
+    margin-top: 0.18rem;
+    font-size: 0.64rem;
+  }
+
+  .market-meta {
+    padding: 0.4rem 0.78rem;
+    font-size: 0.66rem;
+  }
+
+  .signal-zone {
+    padding: 0.42rem 0.78rem;
+    font-size: 0.7rem;
+  }
+
+  .bottom-line {
+    min-height: 1.75rem;
+    padding: 0.32rem 0.55rem;
+    font-size: 0.7rem;
+  }
+}
+
+@media (max-width: 760px) {
+  .terminal {
+    height: auto;
+    min-height: 100vh;
+    overflow: visible;
+  }
+
+  .runtime {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .runtime button {
+    min-height: 3rem;
+    grid-column: 1 / -1;
+    border-top: 1px solid rgba(255, 255, 255, 0.07);
+    border-left: 0;
+  }
+
+  .symbol-grid {
+    grid-template-columns: 1fr;
+    grid-template-rows: none;
+  }
+
+  .symbol-panel {
+    min-height: 18rem;
+  }
+}

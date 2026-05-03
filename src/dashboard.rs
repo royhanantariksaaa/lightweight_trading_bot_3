@@ -1,4 +1,4 @@
-use axum::{extract::State, response::Html, routing::get, Json, Router};
+use axum::{Json, Router, extract::State, response::Html, routing::get};
 use serde::Serialize;
 use std::{net::SocketAddr, sync::Arc};
 use tokio::sync::RwLock;
@@ -28,7 +28,8 @@ pub async fn serve_dashboard(settings: Settings, shared: SharedDashboard) -> any
         .layer(CorsLayer::permissive())
         .with_state(shared);
 
-    let addr: SocketAddr = format!("{}:{}", settings.dashboard_host, settings.dashboard_port).parse()?;
+    let addr: SocketAddr =
+        format!("{}:{}", settings.dashboard_host, settings.dashboard_port).parse()?;
     tracing::info!(%addr, "dashboard listening");
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).await?;

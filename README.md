@@ -20,7 +20,7 @@ The main design goal is to remove the behavior that caused problems in the large
 - Lightweight local dashboard powered by `axum`
 - JSON status endpoint at `/api/status`
 - Dry-run candidate logging by default
-- Live CLOB execution intentionally not wired yet
+- Guarded live buy execution through Polymarket's Python CLOB V2 client
 
 The snipe scanner looks for active 5-minute Polymarket crypto markets that are within the final configured window, default `60` seconds. It scores candidates with a conservative edge proxy based on time-to-expiry, liquidity/volume, and current outcome price. This is **not** an oracle or guaranteed-profitable prediction engine.
 
@@ -42,14 +42,17 @@ The bot is intentionally **buy-only** unless `ALLOW_LIVE_SELLS=true` is explicit
 
 ```bash
 cp .env.example .env
-cargo run
+npm install
+npm run dev
 ```
 
-Then open the dashboard:
+Then open the SolidJS dashboard:
 
 ```text
-http://127.0.0.1:8080
+http://127.0.0.1:5173
 ```
+
+`npm run dev` and `npm run full` both start the Rust backend and the SolidJS frontend together. The Rust API remains available at `http://127.0.0.1:8080/api/status`.
 
 The dashboard exposes:
 
@@ -84,4 +87,30 @@ This repo is meant to implement an inventory-aware order-flow / market-making st
 5. Never auto-sell manual positions.
 6. Only sell bot-owned positions if explicitly enabled.
 
-The current implementation scans, scores, logs, and displays potential 5m last-minute candidates. Live buy/sell/cancel calls are deliberately left as guarded stubs until credential handling, order signing, and production risk controls are reviewed.
+The current implementation scans, scores, logs, displays potential 5m last-minute candidates, and can place guarded live buy orders through the Polymarket CLOB V2 Python client. Live sells and generic strategy orders remain guarded until they are backed by real token-aware market data and reviewed risk controls.
+
+## Live Polymarket CLOB V2 buys
+
+Live execution is wired only for the last-minute 5m snipe scanner, because those Gamma market snapshots include CLOB outcome token ids. The generic placeholder strategy is still blocked from live trading until it is backed by real CLOB market data.
+
+Install the official V2 Python client:
+
+```bash
+pip install py-clob-client-v2
+```
+
+Then disable dry-run, allow live buys, and set credentials:
+
+```env
+DRY_RUN=false
+ALLOW_LIVE_BUYS=true
+LIVE_EXECUTOR_COMMAND=python scripts/live_clob_v2_order.py
+POLYMARKET_PRIVATE_KEY=...
+POLYMARKET_API_KEY=...
+POLYMARKET_API_SECRET=...
+POLYMARKET_API_PASSPHRASE=...
+FUNDER_ADDRESS=...
+SIGNATURE_TYPE=...
+```
+
+The Rust bot enforces `LIVE_MAX_ORDER_USD`, `LIVE_MIN_SECONDS_TO_EXPIRY`, and `LIVE_ORDER_COOLDOWN_MS` before invoking the Python executor. The executor signs and posts a limit order with `ClobClient.create_and_post_order` from `py-clob-client-v2`.

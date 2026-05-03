@@ -1,0 +1,22 @@
+{
+  "name": "lightweight-trading-bot-3",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "backend": "cargo run",
+    "frontend": "vite --host 127.0.0.1",
+    "dev": "npm run full",
+    "full": "concurrently -k -n backend,frontend -c cyan,magenta \"npm run backend\" \"npm run frontend\"",
+    "build": "vite build",
+    "preview": "vite preview --host 127.0.0.1"
+  },
+  "dependencies": {
+    "vite": "^7.3.0",
+    "vite-plugin-solid": "^2.11.8",
+    "solid-js": "^1.9.10"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1",
+    "typescript": "^5.9.3"
+  }
+}

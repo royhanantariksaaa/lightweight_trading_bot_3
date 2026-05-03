@@ -58,17 +58,37 @@ impl BotState {
         Ok(())
     }
 
-    pub fn record_bot_order(&mut self, market_slug: String, outcome: String, limit_price: f64, shares: f64) {
+    pub fn record_bot_order(
+        &mut self,
+        market_slug: String,
+        outcome: String,
+        limit_price: f64,
+        shares: f64,
+    ) {
         let id = Uuid::new_v4().to_string();
-        self.bot_orders.insert(id.clone(), BotOrder {
-            id,
-            market_slug,
-            outcome,
-            limit_price,
-            shares,
-            created_at_ms: now_ms(),
-            status: "open".to_string(),
-        });
+        self.record_bot_order_with_id(id, market_slug, outcome, limit_price, shares);
+    }
+
+    pub fn record_bot_order_with_id(
+        &mut self,
+        id: String,
+        market_slug: String,
+        outcome: String,
+        limit_price: f64,
+        shares: f64,
+    ) {
+        self.bot_orders.insert(
+            id.clone(),
+            BotOrder {
+                id,
+                market_slug,
+                outcome,
+                limit_price,
+                shares,
+                created_at_ms: now_ms(),
+                status: "open".to_string(),
+            },
+        );
     }
 
     pub fn mark_order_cancelled(&mut self, order_id: &str) {
@@ -84,11 +104,14 @@ impl BotState {
     }
 
     pub fn bot_owns_position(&self, market_slug: &str, outcome: &str) -> bool {
-        self.bot_positions.contains_key(&position_key(market_slug, outcome))
+        self.bot_positions
+            .contains_key(&position_key(market_slug, outcome))
     }
 
     pub fn recent_exit_ms(&self, market_slug: &str, outcome: &str) -> Option<i64> {
-        self.recent_exits.get(&position_key(market_slug, outcome)).copied()
+        self.recent_exits
+            .get(&position_key(market_slug, outcome))
+            .copied()
     }
 
     pub fn open_orders_for_market(&self, market_slug: &str) -> usize {
@@ -98,10 +121,23 @@ impl BotState {
             .count()
     }
 
-    pub fn update_signal_counts(&mut self, key: &str, entry_valid: bool, exit_valid: bool) -> SignalCounter {
+    pub fn update_signal_counts(
+        &mut self,
+        key: &str,
+        entry_valid: bool,
+        exit_valid: bool,
+    ) -> SignalCounter {
         let counter = self.signal_counts.entry(key.to_string()).or_default();
-        counter.entry_ticks = if entry_valid { counter.entry_ticks + 1 } else { 0 };
-        counter.exit_ticks = if exit_valid { counter.exit_ticks + 1 } else { 0 };
+        counter.entry_ticks = if entry_valid {
+            counter.entry_ticks + 1
+        } else {
+            0
+        };
+        counter.exit_ticks = if exit_valid {
+            counter.exit_ticks + 1
+        } else {
+            0
+        };
         counter.last_seen_ms = now_ms();
         counter.clone()
     }
