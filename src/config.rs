@@ -12,6 +12,9 @@ pub struct Settings {
     pub symbols: Vec<String>,
     pub max_markets: usize,
 
+    pub dashboard_host: String,
+    pub dashboard_port: u16,
+
     pub allow_live_buys: bool,
     pub allow_live_sells: bool,
     pub allow_cancels: bool,
@@ -29,6 +32,16 @@ pub struct Settings {
     pub max_quote_age_ms: i64,
     pub max_position_usd: f64,
     pub max_open_orders_per_market: usize,
+
+    pub enable_last_minute_5m_snipe: bool,
+    pub snipe_window_seconds: i64,
+    pub snipe_min_edge: f64,
+    pub snipe_max_price: f64,
+    pub snipe_min_volume_usd: f64,
+    pub snipe_min_liquidity_usd: f64,
+    pub snipe_liquidity_scale_usd: f64,
+    pub snipe_max_position_usd: f64,
+    pub snipe_max_signals: usize,
 }
 
 impl Settings {
@@ -39,6 +52,9 @@ impl Settings {
             state_path: PathBuf::from(env_string("STATE_PATH", "./data/state.json")),
             symbols: parse_symbols(&env_string("SYMBOLS", DEFAULT_SYMBOLS)),
             max_markets: env_parse("MAX_MARKETS", 12)?,
+
+            dashboard_host: env_string("DASHBOARD_HOST", "127.0.0.1"),
+            dashboard_port: env_parse("DASHBOARD_PORT", 8080)?,
 
             allow_live_buys: env_bool("ALLOW_LIVE_BUYS", false),
             allow_live_sells: env_bool("ALLOW_LIVE_SELLS", false),
@@ -57,6 +73,16 @@ impl Settings {
             max_quote_age_ms: env_parse("MAX_QUOTE_AGE_MS", 1_500)?,
             max_position_usd: env_parse("MAX_POSITION_USD", 10.0)?,
             max_open_orders_per_market: env_parse("MAX_OPEN_ORDERS_PER_MARKET", 1)?,
+
+            enable_last_minute_5m_snipe: env_bool("ENABLE_LAST_MINUTE_5M_SNIPE", true),
+            snipe_window_seconds: env_parse("SNIPE_WINDOW_SECONDS", 60)?,
+            snipe_min_edge: env_parse("SNIPE_MIN_EDGE", 0.02)?,
+            snipe_max_price: env_parse("SNIPE_MAX_PRICE", 0.96)?,
+            snipe_min_volume_usd: env_parse("SNIPE_MIN_VOLUME_USD", 250.0)?,
+            snipe_min_liquidity_usd: env_parse("SNIPE_MIN_LIQUIDITY_USD", 50.0)?,
+            snipe_liquidity_scale_usd: env_parse("SNIPE_LIQUIDITY_SCALE_USD", 5_000.0)?,
+            snipe_max_position_usd: env_parse("SNIPE_MAX_POSITION_USD", 5.0)?,
+            snipe_max_signals: env_parse("SNIPE_MAX_SIGNALS", 8)?,
         })
     }
 
@@ -65,11 +91,15 @@ impl Settings {
             dry_run = self.dry_run,
             symbols = ?self.symbols,
             max_markets = self.max_markets,
+            dashboard = %format!("{}:{}", self.dashboard_host, self.dashboard_port),
             allow_live_buys = self.allow_live_buys,
             allow_live_sells = self.allow_live_sells,
             auto_take_profit = self.auto_take_profit,
             auto_exit_no_edge = self.auto_exit_no_edge,
             auto_redeem = self.auto_redeem,
+            enable_last_minute_5m_snipe = self.enable_last_minute_5m_snipe,
+            snipe_window_seconds = self.snipe_window_seconds,
+            snipe_max_position_usd = self.snipe_max_position_usd,
             "safety summary"
         );
     }
