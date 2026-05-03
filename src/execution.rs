@@ -12,7 +12,6 @@ use tokio::process::Command;
 use crate::config::Settings;
 use crate::snipe::SnipeSignal;
 
-const DEFAULT_CLOB_HOST: &str = "https://clob.polymarket.com";
 type HmacSha256 = Hmac<Sha256>;
 
 #[derive(Clone)]
@@ -210,10 +209,4 @@ fn round_size(value: f64) -> f64 {
 
 fn default_order_type() -> String {
     "GTC".to_string()
-}
-
-impl Default for LiveExecutor {
-    fn default() -> Self {
-        Self { http: Client::new(), settings: Settings::default_for_tests() }
-    }
 }
