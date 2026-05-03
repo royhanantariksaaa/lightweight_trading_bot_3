@@ -43,7 +43,14 @@ pub struct Settings {
     pub snipe_max_position_usd: f64,
     pub snipe_max_signals: usize,
 
-    pub live_executor_command: String,
+    pub enable_whale_detector: bool,
+    pub whale_mini_usd: f64,
+    pub whale_usd: f64,
+    pub whale_super_usd: f64,
+    pub whale_wall_min_usd: f64,
+    pub whale_tracking_window_ms: i64,
+    pub whale_symbols: Vec<String>,
+
     pub live_max_order_usd: f64,
     pub live_min_seconds_to_expiry: i64,
     pub live_order_cooldown_ms: i64,
@@ -94,10 +101,14 @@ impl Settings {
             snipe_max_position_usd: env_parse("SNIPE_MAX_POSITION_USD", 5.0)?,
             snipe_max_signals: env_parse("SNIPE_MAX_SIGNALS", 8)?,
 
-            live_executor_command: env_string(
-                "LIVE_EXECUTOR_COMMAND",
-                "python scripts/live_clob_v2_order.py",
-            ),
+            enable_whale_detector: env_bool("ENABLE_WHALE_DETECTOR", true),
+            whale_mini_usd: env_parse("WHALE_MINI_USD", 5_000.0)?,
+            whale_usd: env_parse("WHALE_USD", 10_000.0)?,
+            whale_super_usd: env_parse("WHALE_SUPER_USD", 25_000.0)?,
+            whale_wall_min_usd: env_parse("WHALE_WALL_MIN_USD", 25_000.0)?,
+            whale_tracking_window_ms: env_parse("WHALE_TRACKING_WINDOW_MS", 300_000)?,
+            whale_symbols: parse_symbols(&env_string("WHALE_SYMBOLS", "")),
+
             live_max_order_usd: env_parse("LIVE_MAX_ORDER_USD", 5.0)?,
             live_min_seconds_to_expiry: env_parse("LIVE_MIN_SECONDS_TO_EXPIRY", 3)?,
             live_order_cooldown_ms: env_parse("LIVE_ORDER_COOLDOWN_MS", 20_000)?,
@@ -117,7 +128,6 @@ impl Settings {
             dashboard = %format!("{}:{}", self.dashboard_host, self.dashboard_port),
             allow_live_buys = self.allow_live_buys,
             allow_live_sells = self.allow_live_sells,
-            live_executor_configured = !self.live_executor_command.trim().is_empty(),
             live_max_order_usd = self.live_max_order_usd,
             polymarket_clob_host = %self.polymarket_clob_host,
             polymarket_chain_id = self.polymarket_chain_id,
@@ -129,8 +139,18 @@ impl Settings {
             enable_last_minute_5m_snipe = self.enable_last_minute_5m_snipe,
             snipe_window_seconds = self.snipe_window_seconds,
             snipe_max_position_usd = self.snipe_max_position_usd,
+            enable_whale_detector = self.enable_whale_detector,
+            whale_symbols = ?self.effective_whale_symbols(),
             "safety summary"
         );
+    }
+
+    pub fn effective_whale_symbols(&self) -> Vec<String> {
+        if self.whale_symbols.is_empty() {
+            self.symbols.clone()
+        } else {
+            self.whale_symbols.clone()
+        }
     }
 }
 

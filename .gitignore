@@ -3,6 +3,8 @@ dist/
 node_modules/
 data/
 .env
+__pycache__/
+*.pyc
 npm-debug.log*
 *.out.log
 *.err.log

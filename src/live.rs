@@ -1,8 +1,11 @@
 use anyhow::{Context, Result, anyhow, bail};
+use polymarket_client_sdk_v2::PRIVATE_KEY_VAR;
+use polymarket_client_sdk_v2::auth::{LocalSigner, Signer as _};
+use polymarket_client_sdk_v2::clob::types::{OrderType, Side, SignatureType};
+use polymarket_client_sdk_v2::clob::{Client as ClobClient, Config as ClobConfig};
+use polymarket_client_sdk_v2::types::{Address, Decimal, U256};
 use serde::{Deserialize, Serialize};
-use std::process::Stdio;
-use tokio::io::AsyncWriteExt;
-use tokio::process::Command;
+use std::str::FromStr;
 
 use crate::config::Settings;
 use crate::snipe::SnipeSignal;
@@ -59,63 +62,104 @@ pub async fn post_live_order(
     if settings.dry_run {
         bail!("blocked live order: DRY_RUN=true");
     }
-    if settings.live_executor_command.trim().is_empty() {
-        bail!("blocked live order: LIVE_EXECUTOR_COMMAND is empty");
+
+    let private_key = std::env::var(PRIVATE_KEY_VAR)
+        .with_context(|| format!("{PRIVATE_KEY_VAR} is required for live trading"))?;
+    let signer = LocalSigner::from_str(private_key.trim())
+        .context("failed to parse POLYMARKET_PRIVATE_KEY")?
+        .with_chain_id(Some(settings.polymarket_chain_id));
+
+    let mut auth = ClobClient::new(&settings.polymarket_clob_host, ClobConfig::default())
+        .context("failed to create Polymarket CLOB SDK client")?
+        .authentication_builder(&signer);
+
+    if let Some(signature_type) = sdk_signature_type(settings.polymarket_signature_type)? {
+        auth = auth.signature_type(signature_type);
     }
 
-    let mut parts = settings.live_executor_command.split_whitespace();
-    let program = parts.next().context("LIVE_EXECUTOR_COMMAND is empty")?;
-    let args = parts.collect::<Vec<_>>();
-    let payload = serde_json::to_vec(request).context("failed to encode live order request")?;
-
-    let mut child = Command::new(program)
-        .args(args)
-        .env("POLYMARKET_CLOB_HOST", &settings.polymarket_clob_host)
-        .env(
-            "POLYMARKET_CHAIN_ID",
-            settings.polymarket_chain_id.to_string(),
-        )
-        .env("LIVE_ORDER_TYPE", &request.order_type)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .with_context(|| {
-            format!(
-                "failed to spawn live executor `{}`",
-                settings.live_executor_command
-            )
-        })?;
-
-    let mut stdin = child
-        .stdin
-        .take()
-        .context("failed to open live executor stdin")?;
-    stdin
-        .write_all(&payload)
-        .await
-        .context("failed to write live order request")?;
-    drop(stdin);
-
-    let output = child
-        .wait_with_output()
-        .await
-        .context("live executor failed to exit cleanly")?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!(
-            "live executor returned {}: {}",
-            output.status,
-            stderr.trim()
+    let funder = settings.polymarket_funder_address.trim();
+    if !funder.is_empty() {
+        if settings.polymarket_signature_type.is_none() {
+            bail!("FUNDER_ADDRESS requires SIGNATURE_TYPE=1, 2, or 3");
+        }
+        auth = auth.funder(
+            Address::from_str(funder)
+                .with_context(|| format!("invalid FUNDER_ADDRESS={funder}"))?,
         );
     }
 
-    serde_json::from_slice::<LiveOrderResponse>(&output.stdout).with_context(|| {
-        format!(
-            "failed to decode live executor response: {}",
-            String::from_utf8_lossy(&output.stdout)
-        )
+    let client = auth
+        .authenticate()
+        .await
+        .context("failed to authenticate Polymarket CLOB SDK client")?;
+
+    let token_id = U256::from_str(&request.token_id)
+        .with_context(|| format!("invalid CLOB token_id={}", request.token_id))?;
+    let price = decimal_from_f64(request.price, "price")?;
+    let size = decimal_from_f64(request.size, "size")?;
+    let order_type = sdk_order_type(&request.order_type)?;
+
+    let response = client
+        .limit_order()
+        .token_id(token_id)
+        .side(sdk_side(&request.side))
+        .price(price)
+        .size(size)
+        .order_type(order_type)
+        .build_sign_and_post(&signer)
+        .await
+        .context("failed to build, sign, and post Polymarket CLOB V2 order")?;
+
+    let raw = serde_json::json!({
+        "success": response.success,
+        "order_id": response.order_id,
+        "status": format!("{:?}", response.status),
+        "error_msg": response.error_msg,
+        "making_amount": response.making_amount.to_string(),
+        "taking_amount": response.taking_amount.to_string(),
+        "transaction_hashes": response.transaction_hashes.iter().map(ToString::to_string).collect::<Vec<_>>(),
+        "trade_ids": response.trade_ids,
+    });
+    Ok(LiveOrderResponse {
+        success: response.success,
+        order_id: Some(response.order_id),
+        raw,
     })
+}
+
+fn sdk_order_type(raw: &str) -> Result<OrderType> {
+    match raw.trim().to_ascii_uppercase().as_str() {
+        "GTC" => Ok(OrderType::GTC),
+        "FOK" => Ok(OrderType::FOK),
+        "GTD" => Ok(OrderType::GTD),
+        "FAK" => Ok(OrderType::FAK),
+        other => bail!("unsupported LIVE_ORDER_TYPE={other}; expected GTC, FOK, GTD, or FAK"),
+    }
+}
+
+fn sdk_side(side: &LiveSide) -> Side {
+    match side {
+        LiveSide::Buy => Side::Buy,
+    }
+}
+
+fn sdk_signature_type(raw: Option<u8>) -> Result<Option<SignatureType>> {
+    match raw {
+        None => Ok(None),
+        Some(0) => Ok(Some(SignatureType::Eoa)),
+        Some(1) => Ok(Some(SignatureType::Proxy)),
+        Some(2) => Ok(Some(SignatureType::GnosisSafe)),
+        Some(3) => Ok(Some(SignatureType::Poly1271)),
+        Some(other) => bail!("unsupported SIGNATURE_TYPE={other}; expected 0, 1, 2, or 3"),
+    }
+}
+
+fn decimal_from_f64(value: f64, label: &str) -> Result<Decimal> {
+    if !value.is_finite() {
+        bail!("invalid live order {label} {value}");
+    }
+    Decimal::from_str(&format!("{value:.6}"))
+        .with_context(|| format!("failed to convert live order {label}={value} to Decimal"))
 }
 
 fn guarded_request(

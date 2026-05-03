@@ -47,8 +47,8 @@ button {
   min-height: 100vh;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
-  gap: 0.55rem;
-  padding: 0.6rem;
+  gap: 0.38rem;
+  padding: 0.38rem;
   color: var(--ink);
   overflow: auto;
 }
@@ -57,34 +57,34 @@ button {
 .bottom-line,
 .symbol-panel {
   border: 1px solid rgba(255, 255, 255, 0.07);
-  border-radius: 12px;
+  border-radius: 9px;
   background: rgba(18, 25, 31, 0.96);
-  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.22);
+  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.18);
 }
 
 .top-strip {
-  min-height: 3.9rem;
+  min-height: 2.95rem;
   display: grid;
-  grid-template-columns: minmax(13.5rem, 17rem) minmax(0, 1fr);
+  grid-template-columns: minmax(11.75rem, 14rem) minmax(0, 1fr);
   align-items: stretch;
 }
 
 .identity {
   display: flex;
   align-items: center;
-  gap: 0.62rem;
-  padding: 0.55rem 0.72rem;
+  gap: 0.5rem;
+  padding: 0.38rem 0.55rem;
   border-right: 1px solid rgba(255, 255, 255, 0.07);
 }
 
 .identity > span {
-  width: 2.25rem;
-  height: 2.25rem;
+  width: 1.9rem;
+  height: 1.9rem;
   display: grid;
   place-items: center;
   color: white;
   border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 9px;
+  border-radius: 7px;
   background: linear-gradient(180deg, #1d9a74, #097250);
   font-weight: 900;
 }
@@ -102,11 +102,11 @@ button {
 }
 
 .identity strong {
-  font-size: 0.98rem;
+  font-size: 0.84rem;
 }
 
 .identity small {
-  font-size: 0.78rem;
+  font-size: 0.66rem;
 }
 
 .identity small,
@@ -122,21 +122,21 @@ button {
 .runtime {
   min-width: 0;
   display: grid;
-  grid-template-columns: repeat(5, minmax(5.4rem, 1fr)) minmax(4.9rem, auto);
+  grid-template-columns: repeat(5, minmax(4.7rem, 1fr)) minmax(4.4rem, auto);
 }
 
 .metric {
   min-width: 0;
   display: grid;
   align-content: center;
-  gap: 0.12rem;
-  padding: 0.48rem 0.62rem;
+  gap: 0.08rem;
+  padding: 0.32rem 0.48rem;
   border-right: 1px solid rgba(255, 255, 255, 0.07);
 }
 
 .metric span {
   color: var(--faint);
-  font-size: 0.61rem;
+  font-size: 0.52rem;
   font-weight: 850;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -146,7 +146,7 @@ button {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 1rem;
+  font-size: 0.82rem;
 }
 
 .metric.hot strong {
@@ -154,13 +154,13 @@ button {
 }
 
 .runtime button {
-  min-width: 4.9rem;
+  min-width: 4.4rem;
   border: 0;
   border-left: 1px solid rgba(255, 255, 255, 0.07);
   background: var(--panel-2);
   color: var(--ink);
   cursor: pointer;
-  font-size: 0.92rem;
+  font-size: 0.76rem;
 }
 
 .runtime button:hover {
@@ -171,15 +171,15 @@ button {
   min-height: 0;
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  grid-template-rows: repeat(2, minmax(18.25rem, 1fr));
-  gap: 0.55rem;
+  grid-template-rows: repeat(2, minmax(13.4rem, 1fr));
+  gap: 0.38rem;
 }
 
 .symbol-panel {
   min-width: 0;
   min-height: 0;
   display: grid;
-  grid-template-rows: auto auto auto auto minmax(3rem, auto);
+  grid-template-rows: auto auto auto auto minmax(1.65rem, auto);
   align-content: start;
   overflow: clip;
 }
@@ -192,8 +192,8 @@ button {
   min-width: 0;
   display: flex;
   align-items: flex-start;
-  gap: 0.7rem;
-  padding: 0.78rem 0.95rem 0.66rem;
+  gap: 0.52rem;
+  padding: 0.48rem 0.65rem 0.4rem;
   border-bottom: 0;
 }
 
@@ -204,10 +204,10 @@ button {
 
 .coin-logo,
 .coin-fallback {
-  width: 3.35rem;
-  height: 3.35rem;
+  width: 2.35rem;
+  height: 2.35rem;
   flex: none;
-  border-radius: 10px;
+  border-radius: 8px;
   object-fit: cover;
   background: #ff991f;
 }
@@ -216,7 +216,7 @@ button {
   display: grid;
   place-items: center;
   color: white;
-  font-size: 1.5rem;
+  font-size: 1.08rem;
   font-weight: 950;
 }
 
@@ -224,9 +224,9 @@ button {
 .time-chip {
   display: inline-flex;
   align-items: center;
-  min-height: 1.55rem;
-  padding: 0 0.42rem;
-  font-size: 0.68rem;
+  min-height: 1.18rem;
+  padding: 0 0.34rem;
+  font-size: 0.56rem;
   font-weight: 900;
 }
 
@@ -240,7 +240,7 @@ button {
   flex: none;
   margin-left: auto;
   color: #ffd27c;
-  border-radius: 7px;
+  border-radius: 6px;
   background: rgba(240, 163, 41, 0.14);
 }
 
@@ -250,15 +250,15 @@ button {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: normal;
-  font-size: clamp(1rem, 1.08vw, 1.22rem);
+  font-size: clamp(0.82rem, 0.92vw, 1rem);
   line-height: 1.12;
 }
 
 .symbol-head small {
   display: block;
-  margin-top: 0.26rem;
+  margin-top: 0.14rem;
   color: var(--muted);
-  font-size: 0.78rem;
+  font-size: 0.62rem;
   line-height: 1.25;
 }
 
@@ -274,13 +274,13 @@ button {
 .reference-grid div,
 .odds-grid div {
   min-width: 0;
-  padding: 0.64rem 0.95rem;
+  padding: 0.42rem 0.65rem;
   background: var(--panel);
 }
 
 .reference-grid span,
 .odds-grid span {
-  font-size: 0.68rem;
+  font-size: 0.54rem;
   font-weight: 850;
   letter-spacing: 0;
   text-transform: none;
@@ -288,12 +288,12 @@ button {
 
 .reference-grid strong {
   display: block;
-  margin-top: 0.24rem;
+  margin-top: 0.13rem;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   color: #8d99a8;
-  font-size: clamp(1.02rem, 1.15vw, 1.28rem);
+  font-size: clamp(0.86rem, 0.98vw, 1.05rem);
   line-height: 1;
 }
 
@@ -303,20 +303,20 @@ button {
 
 .current-reference em {
   display: inline-block;
-  margin-left: 0.32rem;
+  margin-left: 0.24rem;
   color: var(--faint);
   font-style: normal;
-  font-size: 0.66rem;
+  font-size: 0.52rem;
 }
 
 .speed-line {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 0.32rem;
-  margin-top: 0.22rem;
+  gap: 0.22rem;
+  margin-top: 0.14rem;
   color: var(--muted);
-  font-size: 0.64rem;
+  font-size: 0.5rem;
   font-weight: 800;
 }
 
@@ -343,8 +343,8 @@ button {
 
 .odds-grid strong {
   display: block;
-  margin-top: 0.18rem;
-  font-size: clamp(1.62rem, 2.1vw, 2.15rem);
+  margin-top: 0.1rem;
+  font-size: clamp(1.12rem, 1.55vw, 1.48rem);
   line-height: 0.95;
 }
 
@@ -358,36 +358,36 @@ button {
 
 .odds-grid small {
   display: block;
-  margin-top: 0.28rem;
+  margin-top: 0.16rem;
   color: var(--muted);
-  font-size: 0.7rem;
+  font-size: 0.56rem;
   font-weight: 700;
 }
 
 .market-meta {
   display: flex;
   justify-content: space-between;
-  gap: 0.6rem;
-  padding: 0.52rem 0.95rem;
+  gap: 0.42rem;
+  padding: 0.34rem 0.65rem;
   border-bottom: 1px solid rgba(255, 255, 255, 0.07);
-  font-size: 0.74rem;
+  font-size: 0.58rem;
   font-weight: 750;
 }
 
 .signal-zone {
   display: grid;
   align-content: start;
-  gap: 0.28rem;
-  padding: 0.58rem 0.95rem;
-  font-size: 0.8rem;
+  gap: 0.18rem;
+  padding: 0.36rem 0.65rem;
+  font-size: 0.62rem;
 }
 
 .signal-row {
   display: grid;
-  grid-template-columns: 3rem minmax(0, 1fr) auto;
-  gap: 0.42rem;
+  grid-template-columns: 2.6rem minmax(0, 1fr) auto;
+  gap: 0.32rem;
   align-items: center;
-  padding: 0.34rem 0;
+  padding: 0.22rem 0;
   border-bottom: 1px solid rgba(255, 255, 255, 0.07);
 }
 
@@ -396,7 +396,7 @@ button {
 }
 
 .empty-market {
-  min-height: 8rem;
+  min-height: 5.5rem;
   display: grid;
   place-items: center;
   padding: 1rem;
@@ -404,14 +404,14 @@ button {
 }
 
 .bottom-line {
-  min-height: 2rem;
+  min-height: 1.35rem;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 1rem;
-  padding: 0.44rem 0.65rem;
+  gap: 0.65rem;
+  padding: 0.24rem 0.48rem;
   color: var(--muted);
-  font-size: 0.78rem;
+  font-size: 0.62rem;
 }
 
 .error-text {

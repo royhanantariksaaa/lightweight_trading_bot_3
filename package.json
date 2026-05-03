@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "backend": "cargo run",
+    "backend": "cargo run --bin lightweight-trading-bot-3",
     "frontend": "vite --host 127.0.0.1",
     "dev": "npm run full",
     "full": "concurrently -k -n backend,frontend -c cyan,magenta \"npm run backend\" \"npm run frontend\"",

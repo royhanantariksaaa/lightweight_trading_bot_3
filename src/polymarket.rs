@@ -1,13 +1,15 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, Duration as ChronoDuration, Timelike, Utc};
+use polymarket_client_sdk_v2::clob::types::request::OrderBookSummaryRequest;
+use polymarket_client_sdk_v2::clob::{Client as ClobClient, Config as ClobConfig};
+use polymarket_client_sdk_v2::gamma::Client as GammaClient;
+use polymarket_client_sdk_v2::gamma::types::request::{MarketBySlugRequest, MarketsRequest};
+use polymarket_client_sdk_v2::gamma::types::response::Market as GammaMarket;
+use polymarket_client_sdk_v2::types::{Decimal, U256};
 use reqwest::Client;
-use serde::Deserialize;
+use std::str::FromStr;
 
 use crate::config::Settings;
-
-const GAMMA_MARKETS_URL: &str = "https://gamma-api.polymarket.com/markets";
-const GAMMA_MARKET_BY_SLUG_URL: &str = "https://gamma-api.polymarket.com/markets/slug";
-const CLOB_BOOK_URL: &str = "https://clob.polymarket.com/book";
 
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct MarketSnapshot {
@@ -36,13 +38,18 @@ pub struct OutcomeSnapshot {
 #[derive(Clone)]
 pub struct PolymarketClient {
     http: Client,
+    gamma: GammaClient,
+    clob: ClobClient,
 }
 
 impl PolymarketClient {
-    pub fn new() -> Self {
-        Self {
+    pub fn new(settings: &Settings) -> Result<Self> {
+        Ok(Self {
             http: Client::new(),
-        }
+            gamma: GammaClient::default(),
+            clob: ClobClient::new(&settings.polymarket_clob_host, ClobConfig::default())
+                .context("failed to create Polymarket CLOB SDK client")?,
+        })
     }
 
     pub async fn fetch_active_5m_markets(
@@ -54,32 +61,24 @@ impl PolymarketClient {
             return self.hydrate_live_market_data(slug_markets).await;
         }
 
-        let limit = settings.max_markets.max(10).min(100).to_string();
-        let response = self
-            .http
-            .get(GAMMA_MARKETS_URL)
-            .query(&[
-                ("active", "true"),
-                ("closed", "false"),
-                ("limit", limit.as_str()),
-                ("order", "endDate"),
-                ("ascending", "true"),
-            ])
-            .send()
+        let limit = settings.max_markets.max(10).min(100) as i32;
+        let raw = self
+            .gamma
+            .markets(
+                &MarketsRequest::builder()
+                    .closed(false)
+                    .limit(limit)
+                    .order("endDate".to_string())
+                    .ascending(true)
+                    .build(),
+            )
             .await
-            .context("failed to fetch Polymarket Gamma markets")?
-            .error_for_status()
-            .context("Polymarket Gamma markets returned error status")?;
-
-        let raw: Vec<GammaMarket> = response
-            .json()
-            .await
-            .context("failed to decode Gamma markets")?;
+            .context("failed to fetch Polymarket Gamma markets through SDK")?;
         let now = Utc::now();
 
         let mut markets = raw
             .into_iter()
-            .filter_map(|market| market.into_snapshot(now))
+            .filter_map(|market| gamma_market_into_snapshot(market, now))
             .filter(|market| is_wanted_5m_crypto_market(market, &settings.symbols))
             .take(settings.max_markets)
             .collect::<Vec<_>>();
@@ -101,22 +100,15 @@ impl PolymarketClient {
             let prefix = format!("{}-updown-5m", symbol.to_ascii_lowercase());
             for window in windows {
                 let slug = format!("{}-{}", prefix, window.timestamp());
-                let url = format!("{}/{}", GAMMA_MARKET_BY_SLUG_URL, slug);
-                let Ok(response) = self.http.get(&url).send().await else {
+                let Ok(market) = self
+                    .gamma
+                    .market_by_slug(&MarketBySlugRequest::builder().slug(slug.clone()).build())
+                    .await
+                else {
                     continue;
                 };
-                if response.status() == reqwest::StatusCode::NOT_FOUND {
-                    continue;
-                }
 
-                let market = response
-                    .error_for_status()
-                    .with_context(|| format!("Gamma slug lookup returned error for {slug}"))?
-                    .json::<GammaMarket>()
-                    .await
-                    .with_context(|| format!("failed to decode Gamma market {slug}"))?;
-
-                if let Some(snapshot) = market.into_snapshot(now) {
+                if let Some(snapshot) = gamma_market_into_snapshot(market, now) {
                     if is_wanted_5m_crypto_market(&snapshot, &settings.symbols)
                         && snapshot.seconds_to_expiry > 0
                         && slug_window_has_started(&snapshot.slug, now)
@@ -172,17 +164,32 @@ impl PolymarketClient {
     }
 
     async fn fetch_book(&self, token_id: &str) -> Result<BookSnapshot> {
-        self.http
-            .get(CLOB_BOOK_URL)
-            .query(&[("token_id", token_id)])
-            .send()
+        let token_id =
+            U256::from_str(token_id).with_context(|| format!("invalid token_id={token_id}"))?;
+        let book = self
+            .clob
+            .order_book(
+                &OrderBookSummaryRequest::builder()
+                    .token_id(token_id)
+                    .build(),
+            )
             .await
-            .context("failed to fetch CLOB book")?
-            .error_for_status()
-            .context("CLOB book returned error status")?
-            .json::<BookSnapshot>()
-            .await
-            .context("failed to decode CLOB book")
+            .context("failed to fetch CLOB book through SDK")?;
+
+        Ok(BookSnapshot {
+            bids: Some(
+                book.bids
+                    .into_iter()
+                    .map(|level| BookLevel { price: level.price })
+                    .collect(),
+            ),
+            asks: Some(
+                book.asks
+                    .into_iter()
+                    .map(|level| BookLevel { price: level.price })
+                    .collect(),
+            ),
+        })
     }
 
     async fn fetch_chainlink_live_price(&self, symbol: &str) -> Result<Option<f64>> {
@@ -231,8 +238,15 @@ impl PolymarketClient {
             }))
     }
 
-    async fn fetch_event_page_price_to_beat(&self, symbol: &str, slug: &str) -> Result<Option<f64>> {
-        let Some(start_seconds) = slug.rsplit('-').next().and_then(|raw| raw.parse::<i64>().ok())
+    async fn fetch_event_page_price_to_beat(
+        &self,
+        symbol: &str,
+        slug: &str,
+    ) -> Result<Option<f64>> {
+        let Some(start_seconds) = slug
+            .rsplit('-')
+            .next()
+            .and_then(|raw| raw.parse::<i64>().ok())
         else {
             return Ok(None);
         };
@@ -325,118 +339,71 @@ fn extract_number_after(haystack: &str, marker: &str) -> Option<f64> {
     raw.parse::<f64>().ok()
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct GammaMarket {
-    slug: Option<String>,
-    question: Option<String>,
-    icon: Option<String>,
-    image: Option<String>,
-    end_date: Option<String>,
-    end_date_iso: Option<String>,
-    volume: Option<serde_json::Value>,
-    volume_num: Option<f64>,
-    liquidity: Option<serde_json::Value>,
-    liquidity_num: Option<f64>,
-    outcomes: Option<serde_json::Value>,
-    outcome_prices: Option<serde_json::Value>,
-    clob_token_ids: Option<serde_json::Value>,
-    event_metadata: Option<EventMetadata>,
-    events: Option<Vec<GammaEvent>>,
-}
+fn gamma_market_into_snapshot(market: GammaMarket, now: DateTime<Utc>) -> Option<MarketSnapshot> {
+    if market.active == Some(false) || market.closed == Some(true) {
+        return None;
+    }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct GammaEvent {
-    event_metadata: Option<EventMetadata>,
-}
+    let slug = market.slug?;
+    let question = market.question.unwrap_or_else(|| slug.clone());
+    let end_time = market.end_date;
+    let seconds_to_expiry = end_time
+        .map(|dt| (dt - now).num_seconds())
+        .unwrap_or(i64::MAX);
 
-#[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct EventMetadata {
-    price_to_beat: Option<f64>,
-}
+    let outcome_names = market
+        .outcomes
+        .unwrap_or_else(|| vec!["Yes".into(), "No".into()]);
+    let prices = market.outcome_prices.unwrap_or_default();
+    let token_ids = market.clob_token_ids.unwrap_or_default();
 
-impl GammaMarket {
-    fn into_snapshot(self, now: DateTime<Utc>) -> Option<MarketSnapshot> {
-        let price_to_beat = self.price_to_beat();
-        let slug = self.slug?;
-        let question = self.question.unwrap_or_else(|| slug.clone());
-        let end_time = self
-            .end_date
-            .as_deref()
-            .or(self.end_date_iso.as_deref())
-            .and_then(|raw| DateTime::parse_from_rfc3339(raw).ok())
-            .map(|dt| dt.with_timezone(&Utc));
-        let seconds_to_expiry = end_time
-            .map(|dt| (dt - now).num_seconds())
-            .unwrap_or(i64::MAX);
-
-        let outcome_names =
-            parse_string_array(self.outcomes).unwrap_or_else(|| vec!["Yes".into(), "No".into()]);
-        let prices = parse_f64_array(self.outcome_prices).unwrap_or_default();
-        let token_ids = parse_string_array(self.clob_token_ids).unwrap_or_default();
-
-        let outcomes = outcome_names
-            .into_iter()
-            .enumerate()
-            .map(|(idx, name)| OutcomeSnapshot {
-                name,
-                token_id: token_ids.get(idx).cloned(),
-                price: prices.get(idx).copied().unwrap_or(0.0),
-                best_bid: None,
-                best_ask: None,
-            })
-            .filter(|outcome| outcome.price > 0.0)
-            .collect::<Vec<_>>();
-
-        if outcomes.is_empty() {
-            return None;
-        }
-
-        Some(MarketSnapshot {
-            slug,
-            question,
-            icon: self.icon,
-            image: self.image,
-            end_time,
-            seconds_to_expiry,
-            volume: self
-                .volume_num
-                .or_else(|| parse_f64_value(self.volume))
-                .unwrap_or(0.0),
-            liquidity: self
-                .liquidity_num
-                .or_else(|| parse_f64_value(self.liquidity))
-                .unwrap_or(0.0),
-            price_to_beat,
-            current_price: None,
-            outcomes,
+    let outcomes = outcome_names
+        .into_iter()
+        .enumerate()
+        .map(|(idx, name)| OutcomeSnapshot {
+            name,
+            token_id: token_ids.get(idx).map(ToString::to_string),
+            price: prices.get(idx).map(decimal_to_f64).unwrap_or(0.0),
+            best_bid: None,
+            best_ask: None,
         })
+        .filter(|outcome| outcome.price > 0.0)
+        .collect::<Vec<_>>();
+
+    if outcomes.is_empty() {
+        return None;
     }
 
-    fn price_to_beat(&self) -> Option<f64> {
-        self.event_metadata
-            .as_ref()
-            .and_then(|metadata| metadata.price_to_beat)
-            .or_else(|| {
-                self.events
-                    .as_ref()?
-                    .iter()
-                    .find_map(|event| event.event_metadata.as_ref()?.price_to_beat)
-            })
-    }
+    Some(MarketSnapshot {
+        slug,
+        question,
+        icon: market.icon,
+        image: market.image,
+        end_time,
+        seconds_to_expiry,
+        volume: market
+            .volume_num
+            .or(market.volume)
+            .map(|value| decimal_to_f64(&value))
+            .unwrap_or(0.0),
+        liquidity: market
+            .liquidity_num
+            .or(market.liquidity)
+            .map(|value| decimal_to_f64(&value))
+            .unwrap_or(0.0),
+        price_to_beat: None,
+        current_price: None,
+        outcomes,
+    })
 }
 
-#[derive(Debug, Deserialize)]
 struct BookSnapshot {
     bids: Option<Vec<BookLevel>>,
     asks: Option<Vec<BookLevel>>,
 }
 
-#[derive(Debug, Deserialize)]
 struct BookLevel {
-    price: String,
+    price: Decimal,
 }
 
 impl BookSnapshot {
@@ -444,7 +411,7 @@ impl BookSnapshot {
         self.bids
             .as_ref()?
             .iter()
-            .filter_map(|level| level.price.parse::<f64>().ok())
+            .map(|level| decimal_to_f64(&level.price))
             .max_by(|left, right| left.total_cmp(right))
     }
 
@@ -452,48 +419,11 @@ impl BookSnapshot {
         self.asks
             .as_ref()?
             .iter()
-            .filter_map(|level| level.price.parse::<f64>().ok())
+            .map(|level| decimal_to_f64(&level.price))
             .min_by(|left, right| left.total_cmp(right))
     }
 }
 
-fn parse_string_array(value: Option<serde_json::Value>) -> Option<Vec<String>> {
-    match value? {
-        serde_json::Value::Array(items) => Some(
-            items
-                .into_iter()
-                .filter_map(|item| item.as_str().map(ToOwned::to_owned))
-                .collect(),
-        ),
-        serde_json::Value::String(raw) => serde_json::from_str::<Vec<String>>(&raw).ok(),
-        _ => None,
-    }
-}
-
-fn parse_f64_array(value: Option<serde_json::Value>) -> Option<Vec<f64>> {
-    match value? {
-        serde_json::Value::Array(items) => Some(
-            items
-                .into_iter()
-                .filter_map(|item| parse_f64_value(Some(item)))
-                .collect(),
-        ),
-        serde_json::Value::String(raw) => serde_json::from_str::<Vec<serde_json::Value>>(&raw)
-            .ok()
-            .map(|items| {
-                items
-                    .into_iter()
-                    .filter_map(|item| parse_f64_value(Some(item)))
-                    .collect()
-            }),
-        _ => None,
-    }
-}
-
-fn parse_f64_value(value: Option<serde_json::Value>) -> Option<f64> {
-    match value? {
-        serde_json::Value::Number(number) => number.as_f64(),
-        serde_json::Value::String(raw) => raw.parse::<f64>().ok(),
-        _ => None,
-    }
+fn decimal_to_f64(value: &Decimal) -> f64 {
+    value.to_string().parse::<f64>().unwrap_or(0.0)
 }

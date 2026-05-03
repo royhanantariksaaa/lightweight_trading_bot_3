@@ -99,6 +99,21 @@ pub fn evaluate_strategy(settings: &Settings, state: &BotState, ctx: &StrategyCo
         }
     }
 
+    if let Some(order) =
+        state.stale_open_order_for_market(&ctx.market_slug, settings.maker_order_ttl_ms)
+    {
+        let score = entry_score(ctx);
+        if score <= settings.cancel_edge {
+            return Decision::CancelOrder {
+                order_id: order.id.clone(),
+                reason: format!(
+                    "stale maker order exceeded {}ms ttl with score {:.3}",
+                    settings.maker_order_ttl_ms, score
+                ),
+            };
+        }
+    }
+
     if state.open_orders_for_market(&ctx.market_slug) >= settings.max_open_orders_per_market {
         return Decision::Observe {
             reason: "open order cap reached for market".to_string(),
@@ -117,6 +132,17 @@ pub fn evaluate_strategy(settings: &Settings, state: &BotState, ctx: &StrategyCo
     );
 
     if state.bot_owns_position(&ctx.market_slug, &ctx.outcome) {
+        if let Some(opened_at) = state.bot_position_opened_at_ms(&ctx.market_slug, &ctx.outcome) {
+            let held_ms = now_ms() - opened_at;
+            if held_ms < settings.min_hold_ms {
+                return Decision::Observe {
+                    reason: format!(
+                        "minimum hold active: {}ms remaining",
+                        settings.min_hold_ms - held_ms
+                    ),
+                };
+            }
+        }
         if !settings.auto_take_profit && !settings.auto_exit_no_edge {
             return Decision::Observe {
                 reason: "bot-owned position exists; auto exits disabled".to_string(),

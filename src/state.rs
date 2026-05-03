@@ -121,6 +121,21 @@ impl BotState {
             .count()
     }
 
+    pub fn stale_open_order_for_market(&self, market_slug: &str, ttl_ms: i64) -> Option<&BotOrder> {
+        let cutoff = now_ms() - ttl_ms;
+        self.bot_orders
+            .values()
+            .filter(|order| order.market_slug == market_slug && order.status == "open")
+            .filter(|order| order.created_at_ms <= cutoff)
+            .min_by_key(|order| order.created_at_ms)
+    }
+
+    pub fn bot_position_opened_at_ms(&self, market_slug: &str, outcome: &str) -> Option<i64> {
+        self.bot_positions
+            .get(&position_key(market_slug, outcome))
+            .map(|position| position.opened_at_ms)
+    }
+
     pub fn update_signal_counts(
         &mut self,
         key: &str,

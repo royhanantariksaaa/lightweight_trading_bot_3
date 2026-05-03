@@ -14,9 +14,37 @@ pub struct DashboardState {
     pub scanned_markets: usize,
     pub candidates: Vec<SnipeSignal>,
     pub watched_markets: Vec<MarketSnapshot>,
+    pub latest_whale_signal: Option<WhaleSignal>,
+    pub whale_signals: Vec<WhaleSignal>,
     pub last_error: Option<String>,
     pub dry_run: bool,
     pub allow_live_buys: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct WhaleWallInfo {
+    pub price: f64,
+    pub notional_usd: f64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct WhaleSignal {
+    pub timestamp: String,
+    pub market: String,
+    pub symbol: String,
+    pub side: String,
+    pub tier: String,
+    pub trade_price: f64,
+    pub quantity: f64,
+    pub notional_usd: f64,
+    pub target_price: f64,
+    pub required_notional: f64,
+    pub signal: String,
+    pub imbalance_pct: f64,
+    pub bid_wall: Option<WhaleWallInfo>,
+    pub ask_wall: Option<WhaleWallInfo>,
+    pub need_up_10: f64,
+    pub need_down_10: f64,
 }
 
 pub type SharedDashboard = Arc<RwLock<DashboardState>>;
@@ -58,7 +86,14 @@ const INDEX_HTML: &str = r#"<!doctype html>
     .card { background: #141d3a; border: 1px solid #26324d; border-radius: 14px; padding: 16px; box-shadow: 0 10px 25px rgba(0,0,0,.18); }
     .muted { color: #94a3b8; font-size: 13px; }
     .big { font-size: 28px; font-weight: 800; margin-top: 6px; }
+    .metric { display: grid; gap: 4px; }
+    .metric .label { color: #94a3b8; font-size: 12px; text-transform: uppercase; letter-spacing: .08em; }
+    .metric .value { font-size: 18px; font-weight: 750; }
+    .signal-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-top: 12px; }
+    .signal-panel { border: 1px solid #26324d; background: #101831; border-radius: 8px; padding: 14px; }
+    .table-wrap { overflow-x: auto; }
     table { width: 100%; border-collapse: collapse; overflow: hidden; border-radius: 14px; }
+    .wide-table { min-width: 1120px; }
     th, td { text-align: left; padding: 10px; border-bottom: 1px solid #26324d; vertical-align: top; }
     th { color: #94a3b8; font-size: 12px; text-transform: uppercase; letter-spacing: .08em; }
     .badge { display: inline-block; padding: 4px 8px; border-radius: 999px; background: #1e293b; font-size: 12px; }
@@ -89,6 +124,17 @@ const INDEX_HTML: &str = r#"<!doctype html>
     </section>
 
     <section class="card">
+      <h2>Whale signals</h2>
+      <div id="latestWhale" class="muted">Loading...</div>
+      <div class="table-wrap">
+        <table class="wide-table">
+          <thead><tr><th>Time</th><th>Market</th><th>Flow</th><th>Trade</th><th>Target</th><th>Recovery / Pullback</th><th>Book pressure</th><th>Walls</th><th>Move liquidity</th></tr></thead>
+          <tbody id="whaleRows"><tr><td colspan="9" class="muted">Loading...</td></tr></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card">
       <h2>Last error</h2>
       <div id="error" class="muted">None</div>
     </section>
@@ -106,18 +152,85 @@ async function refresh() {
   const rows = document.getElementById('rows');
   if (!data.candidates.length) {
     rows.innerHTML = '<tr><td colspan="7" class="muted">No last-minute 5m snipe candidates right now.</td></tr>';
-    return;
+  } else {
+    rows.innerHTML = data.candidates.map(c => `
+      <tr>
+        <td><strong>${escapeHtml(c.market_slug)}</strong><div class="muted">${escapeHtml(c.question)}</div></td>
+        <td>${escapeHtml(c.outcome)}</td>
+        <td>${c.price.toFixed(3)}</td>
+        <td>${c.expected_edge.toFixed(3)}</td>
+        <td>${c.seconds_to_expiry}s</td>
+        <td>$${c.stake_usd.toFixed(2)}</td>
+        <td><span class="badge ${c.dry_run ? 'safe' : 'hot'}">${c.dry_run ? 'DRY RUN' : 'LIVE BUY ENABLED'}</span></td>
+      </tr>`).join('');
   }
-  rows.innerHTML = data.candidates.map(c => `
-    <tr>
-      <td><strong>${escapeHtml(c.market_slug)}</strong><div class="muted">${escapeHtml(c.question)}</div></td>
-      <td>${escapeHtml(c.outcome)}</td>
-      <td>${c.price.toFixed(3)}</td>
-      <td>${c.expected_edge.toFixed(3)}</td>
-      <td>${c.seconds_to_expiry}s</td>
-      <td>$${c.stake_usd.toFixed(2)}</td>
-      <td><span class="badge ${c.dry_run ? 'safe' : 'hot'}">${c.dry_run ? 'DRY RUN' : 'LIVE BUY ENABLED'}</span></td>
-    </tr>`).join('');
+
+  const whaleRows = document.getElementById('whaleRows');
+  const latestWhale = document.getElementById('latestWhale');
+  latestWhale.innerHTML = renderLatestWhale(data.latest_whale_signal);
+
+  if (!data.whale_signals.length) {
+    whaleRows.innerHTML = '<tr><td colspan="9" class="muted">No whale signals yet.</td></tr>';
+  } else {
+    whaleRows.innerHTML = data.whale_signals.map(w => `
+      <tr>
+        <td>${escapeHtml(w.timestamp)}</td>
+        <td><strong>${escapeHtml(w.symbol)}</strong><div class="muted">${escapeHtml(w.market)}</div></td>
+        <td><span class="badge ${w.side === 'BUY' ? 'safe' : 'hot'}">${escapeHtml(w.side)}</span><div class="muted">${escapeHtml(w.tier)}</div></td>
+        <td>$${money(w.notional_usd)}<div class="muted">qty ${num(w.quantity, 6)} @ ${price(w.trade_price)}</div></td>
+        <td>${price(w.target_price)}<div class="muted">distance ${price(w.target_price - w.trade_price)}</div></td>
+        <td><span class="badge hot">${escapeHtml(w.signal)}</span><div class="muted">required $${money(w.required_notional)}</div></td>
+        <td>${num(w.imbalance_pct, 1)}% imbalance</td>
+        <td>${wallText('Bid', w.bid_wall)}<div class="muted">${wallText('Ask', w.ask_wall)}</div></td>
+        <td>up10 $${money(w.need_up_10)}<div class="muted">down10 $${money(w.need_down_10)}</div></td>
+      </tr>`).join('');
+  }
+}
+
+function renderLatestWhale(w) {
+  if (!w) return '<div class="muted">No latest whale signal yet.</div>';
+  return `
+    <div class="signal-panel">
+      <div class="muted">${escapeHtml(w.timestamp)} · ${escapeHtml(w.market)}</div>
+      <div class="signal-grid">
+        ${metric('Symbol', escapeHtml(w.symbol))}
+        ${metric('Side / Tier', `<span class="badge ${w.side === 'BUY' ? 'safe' : 'hot'}">${escapeHtml(w.side)}</span> ${escapeHtml(w.tier)}`)}
+        ${metric('Signal', `<span class="badge hot">${escapeHtml(w.signal)}</span>`)}
+        ${metric('Trade Price', price(w.trade_price))}
+        ${metric('Quantity', num(w.quantity, 6))}
+        ${metric('Notional', '$' + money(w.notional_usd))}
+        ${metric('Target Price', price(w.target_price))}
+        ${metric('Required Flow', '$' + money(w.required_notional))}
+        ${metric('Book Imbalance', num(w.imbalance_pct, 1) + '%')}
+        ${metric('Bid Wall', wallValue(w.bid_wall))}
+        ${metric('Ask Wall', wallValue(w.ask_wall))}
+        ${metric('Move Liquidity', `up10 $${money(w.need_up_10)} / down10 $${money(w.need_down_10)}`)}
+      </div>
+    </div>`;
+}
+
+function metric(label, value) {
+  return `<div class="metric"><div class="label">${label}</div><div class="value">${value}</div></div>`;
+}
+
+function wallValue(wall) {
+  return wall ? `$${money(wall.notional_usd)} @ ${price(wall.price)}` : 'none';
+}
+
+function wallText(label, wall) {
+  return `${label}: ${wallValue(wall)}`;
+}
+
+function money(value) {
+  return Number(value || 0).toLocaleString(undefined, { maximumFractionDigits: 0 });
+}
+
+function price(value) {
+  return Number(value || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function num(value, digits) {
+  return Number(value || 0).toLocaleString(undefined, { minimumFractionDigits: digits, maximumFractionDigits: digits });
 }
 function escapeHtml(value) {
   return String(value).replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));

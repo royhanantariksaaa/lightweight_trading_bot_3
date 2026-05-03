@@ -4,15 +4,27 @@ version = "0.1.0"
 edition = "2024"
 description = "Safety-first lightweight Polymarket 5m last-minute snipe bot with dashboard"
 
+[[bin]]
+name = "lightweight-trading-bot-3"
+path = "src/main.rs"
+
+[[bin]]
+name = "binance-basis-test"
+path = "scripts/test.rs"
+
 [dependencies]
 anyhow = "1"
 axum = "0.7"
 chrono = { version = "0.4", features = ["serde"] }
 dotenvy = "0.15"
+futures-util = "0.3"
+polymarket_client_sdk_v2 = { version = "0.6.0-canary.1", features = ["clob", "gamma"] }
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+rustls = { version = "0.23", features = ["ring"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "fs", "signal", "process", "io-util"] }
+tokio-tungstenite = { version = "0.27", features = ["rustls-tls-webpki-roots"] }
 tower-http = { version = "0.5", features = ["cors"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

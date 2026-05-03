@@ -5,6 +5,7 @@ mod polymarket;
 mod snipe;
 mod state;
 mod strategy;
+mod whale;
 
 use anyhow::Result;
 use chrono::Utc;
@@ -24,6 +25,7 @@ use crate::strategy::{Decision, StrategyContext, evaluate_strategy};
 #[tokio::main]
 async fn main() -> Result<()> {
     dotenvy::dotenv().ok();
+    let _ = rustls::crypto::ring::default_provider().install_default();
     tracing_subscriber::fmt()
         .with_env_filter(std::env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string()))
         .init();
@@ -38,6 +40,8 @@ async fn main() -> Result<()> {
     }));
 
     let dashboard_settings = settings.clone();
+    let whale_settings = settings.clone();
+    let bot_settings = settings;
     let dashboard_handle = tokio::spawn({
         let dashboard_state = dashboard_state.clone();
         async move {
@@ -47,7 +51,19 @@ async fn main() -> Result<()> {
         }
     });
 
-    let bot_handle = tokio::spawn(run_bot(settings, dashboard_state));
+    let bot_handle = tokio::spawn(run_bot(bot_settings, dashboard_state.clone()));
+    let whale_handle = if whale_settings.enable_whale_detector {
+        let whale_dashboard_state = dashboard_state.clone();
+        Some(tokio::spawn(async move {
+            if let Err(error) =
+                whale::run_whale_detector(whale_settings, whale_dashboard_state).await
+            {
+                warn!(%error, "whale detector stopped");
+            }
+        }))
+    } else {
+        None
+    };
 
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {
@@ -59,14 +75,26 @@ async fn main() -> Result<()> {
         _ = dashboard_handle => {
             warn!("dashboard task exited");
         }
+        _ = wait_optional_task(whale_handle) => {
+            warn!("whale detector task exited");
+        }
     }
 
     Ok(())
 }
 
+async fn wait_optional_task(handle: Option<tokio::task::JoinHandle<()>>) {
+    match handle {
+        Some(handle) => {
+            let _ = handle.await;
+        }
+        None => std::future::pending::<()>().await,
+    }
+}
+
 async fn run_bot(settings: Settings, dashboard_state: SharedDashboard) -> Result<()> {
     let mut state = BotState::load_or_default(&settings.state_path).await?;
-    let polymarket = PolymarketClient::new();
+    let polymarket = PolymarketClient::new(&settings)?;
     let mut last_live_order_ms = 0_i64;
 
     loop {
