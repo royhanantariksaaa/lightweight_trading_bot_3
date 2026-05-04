@@ -28,9 +28,11 @@ pub struct BotOrder {
 pub struct BotPosition {
     pub market_slug: String,
     pub outcome: String,
-    pub entry_price: f64,
-    pub shares: f64,
+    pub avg_entry_price: f64,
+    pub total_shares: f64,
+    pub total_cost_usd: f64,
     pub opened_at_ms: i64,
+    pub last_buy_at_ms: i64,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -111,16 +113,36 @@ impl BotState {
         shares: f64,
     ) {
         let key = position_key(&market_slug, &outcome);
+        let cost = entry_price * shares;
         self.bot_positions.insert(
             key,
             BotPosition {
                 market_slug,
                 outcome,
-                entry_price,
-                shares,
+                avg_entry_price: entry_price,
+                total_shares: shares,
+                total_cost_usd: cost,
                 opened_at_ms: now_ms(),
+                last_buy_at_ms: now_ms(),
             },
         );
+    }
+
+    pub fn record_position_addition(
+        &mut self,
+        market_slug: &str,
+        outcome: &str,
+        price: f64,
+        shares: f64,
+    ) {
+        let key = position_key(market_slug, outcome);
+        if let Some(pos) = self.bot_positions.get_mut(&key) {
+            let additional_cost = price * shares;
+            pos.total_shares += shares;
+            pos.total_cost_usd += additional_cost;
+            pos.avg_entry_price = pos.total_cost_usd / pos.total_shares;
+            pos.last_buy_at_ms = now_ms();
+        }
     }
 
     pub fn bot_owns_position(&self, market_slug: &str, outcome: &str) -> bool {

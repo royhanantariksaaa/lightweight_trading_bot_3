@@ -123,7 +123,12 @@ async fn run_bot(
                             info!(?signal, "DRY RUN: last-minute 5m snipe candidate");
                         } else if now_ms() - last_live_order_ms < settings.live_order_cooldown_ms {
                             info!(?signal, "live order cooldown active: skipping candidate");
-                        } else {
+                        } else if let Some(exit_ms) = state.recent_exit_ms(&signal.market_slug, &signal.outcome) {
+                            let age = now_ms() - exit_ms;
+                            if age < 10_000 { // 10 second "Greed Cooldown"
+                                info!(?signal, age_ms = age, "RE-ENTRY BLOCKED: Greed cooldown active (last exit was {}s ago)", age / 1000);
+                                continue;
+                            }
                             match buy_request_from_snipe(&settings, signal) {
                                 Ok(request) => {
                                     info!(?signal, "SNIPE FOUND: placing live Polymarket order");
@@ -144,12 +149,22 @@ async fn run_bot(
                                                 signal.price,
                                                 request.size,
                                             );
-                                            state.record_position(
-                                                signal.market_slug.clone(),
-                                                signal.outcome.clone(),
-                                                signal.price,
-                                                request.size,
-                                            );
+                                            if state.bot_owns_position(&signal.market_slug, &signal.outcome) {
+                                                info!(?signal, "AVERAGING DOWN: Adding to existing position");
+                                                state.record_position_addition(
+                                                    &signal.market_slug,
+                                                    &signal.outcome,
+                                                    signal.price,
+                                                    request.size,
+                                                );
+                                            } else {
+                                                state.record_position(
+                                                    signal.market_slug.clone(),
+                                                    signal.outcome.clone(),
+                                                    signal.price,
+                                                    request.size,
+                                                );
+                                            }
                                             last_live_order_ms = now_ms();
                                             info!(?request, raw = ?response.raw, "placed live Polymarket CLOB V2 buy order");
                                             dashboard_state.write().await.push_activity("success", "Order Accepted", Some(&request.market_slug));
@@ -212,26 +227,44 @@ async fn run_bot(
                 let whale_bias = whale_ctx.directional_bias(&symbol);
                 
                 // EMERGENCY WHALE EXIT: Exit if whales reverse strongly against us, regardless of profit/loss.
-                let exit_triggered = if position.outcome == "Up" {
-                    whale_bias < -0.2 // Whales are selling our "Up" position
+                let whale_exit = if position.outcome == "Up" {
+                    whale_bias < -0.3 // Increased threshold to avoid panic exits
                 } else {
-                    whale_bias > 0.2  // Whales are buying against our "Down" position
+                    whale_bias > 0.3
                 };
 
-                if exit_triggered {
-                    info!(%symbol, %whale_bias, outcome = %position.outcome, "EMERGENCY WHALE EXIT TRIGGERED");
-                    exits_to_process.push((market.clone(), position.clone()));
+                // VOLATILITY HARVESTING: Take profit if we are significantly up and there is still time.
+                // If share price increased by 15% from our average entry, lock it in.
+                let share_price = outcome.map(|o| o.price).unwrap_or(0.0);
+                let take_profit_exit = if share_price > 0.0 && position.avg_entry_price > 0.0 {
+                    let profit_pct = (share_price - position.avg_entry_price) / position.avg_entry_price;
+                    profit_pct >= 0.15 && market.seconds_to_expiry > 60 // Only take profit early if > 1 min left
+                } else {
+                    false
+                };
+
+                // TREND LOSS: If Binance price crosses the Target (Price to Beat) against us, cut losses.
+                let trend_loss_exit = if position.outcome == "Up" {
+                    market.current_price.unwrap_or(f64::MAX) < (market.price_to_beat.unwrap_or(0.0) - 1.0) // 1 USD buffer
+                } else {
+                    market.current_price.unwrap_or(0.0) > (market.price_to_beat.unwrap_or(f64::MAX) + 1.0)
+                };
+
+                if whale_exit || take_profit_exit || trend_loss_exit {
+                    let reason = if whale_exit { "WHALE REVERSAL" } else if take_profit_exit { "TAKE PROFIT" } else { "TREND LOSS" };
+                    info!(%symbol, %reason, %whale_bias, outcome = %position.outcome, "EXIT TRIGGERED");
+                    exits_to_process.push((market.clone(), position.clone(), reason));
                 }
             }
 
             // 2. Execute exits
-            for (market, position) in exits_to_process {
-                match sell_request_from_position(&settings, &market, &position.outcome, position.shares) {
+            for (market, position, reason) in exits_to_process {
+                match sell_request_from_position(&settings, &market, &position.outcome, position.total_shares) {
                     Ok(request) => {
                         match post_live_order(&settings, &request).await {
                             Ok(res) if res.success => {
-                                info!(?request, "WHALE EXIT: Position closed early for profit");
-                                dashboard_state.write().await.push_activity("warn", "Whale Exit Triggered", Some(&format!("Exited {} {}", position.outcome, position.market_slug)));
+                                info!(?request, %reason, "POSITION CLOSED: Early exit executed");
+                                dashboard_state.write().await.push_activity("warn", &format!("Exit: {}", reason), Some(&format!("Exited {} {}", position.outcome, position.market_slug)));
                                 state.record_exit(&position.market_slug, &position.outcome);
                             }
                             Ok(res) => warn!(raw = ?res.raw, "Whale exit failed: order not accepted"),
