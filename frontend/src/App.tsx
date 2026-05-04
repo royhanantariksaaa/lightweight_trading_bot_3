@@ -1,4 +1,4 @@
-import { Activity, Eye, LineChart, RefreshCw, Wifi, Zap } from "lucide-solid";
+import { Activity, Eye, LineChart, RefreshCw, TrendingUp, Wifi, Zap } from "lucide-solid";
 import { createEffect, createMemo, createSignal, For, Show } from "solid-js";
 import { Metric } from "./components/atoms/Metric";
 import { Header } from "./components/organisms/Header";
