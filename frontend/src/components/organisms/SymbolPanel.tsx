@@ -3,7 +3,7 @@ import { Activity, Target, TrendingUp, TrendingDown, Droplets, BarChart2, AlertC
 import { formatDelta, formatReferencePrice, formatSpeed, formatUsd } from "../../formatting";
 import { marketWindow, outcomeBidAsk, outcomePrice, secondsLeft } from "../../market";
 import { freshestReferencePrice } from "../../reference";
-import type { Candidate, LiveQuote, LiveReferencePrice, WatchedMarket, WhaleSignal, WhaleWallInfo } from "../../types";
+import type { BinanceBookInfo, Candidate, LiveQuote, LiveReferencePrice, WatchedMarket, WhaleSignal, WhaleWallInfo } from "../../types";
 
 export function SymbolPanel(props: {
   symbol: string;
@@ -15,6 +15,7 @@ export function SymbolPanel(props: {
   nowMs: number;
   liveQuotes: Map<string, LiveQuote>;
   liveReferencePrices: Map<string, LiveReferencePrice>;
+  binanceBook?: BinanceBookInfo;
   selected?: boolean;
   onSelect?: () => void;
 }) {
@@ -61,6 +62,9 @@ export function SymbolPanel(props: {
           <span class="hidden">{props.symbol}</span>
           <strong class="block font-heading text-[1.05rem] font-semibold leading-[1.16] text-[#f7fbff] truncate">
             {props.market ? `${props.symbol} Up or Down 5m` : "waiting for market"}
+            {["XRP", "SOL", "DOGE", "PEPE"].includes(props.symbol) && (
+              <span class="ml-2 text-[0.6rem] bg-red/20 text-red px-1.5 py-0.5 rounded-full uppercase tracking-tighter align-middle">High Risk</span>
+            )}
           </strong>
           <small class="block mt-[3px] text-[#9aabbc] text-[0.78rem]">
             {props.market ? marketWindow(props.market.question) : ""}
@@ -108,6 +112,27 @@ export function SymbolPanel(props: {
               <span class="flex items-center gap-1"><Droplets size={11} /> Liq {formatUsd(market().liquidity)}</span>
             </div>
             <div class="grid gap-[2px] pt-2 pb-2.5 px-3.5 border-t border-soft-line text-[#91a1af] text-[0.72rem]">
+              <Show when={props.binanceBook}>
+                {(book) => (
+                  <div class="flex items-center justify-between gap-2 min-w-0 py-1.5 border-b border-[rgba(255,255,255,0.05)]">
+                    <div class="flex items-center gap-1.5 min-w-0">
+                      <BarChart2 size={13} class="text-blue flex-none" />
+                      <span class="text-[0.68rem] font-black uppercase text-white/80">Binance Intel</span>
+                    </div>
+                    <div class="flex items-center gap-2 text-[0.66rem] font-bold text-[#9aabbc]">
+                      <span class={book().imbalance_pct > 15 ? "text-green" : book().imbalance_pct < -15 ? "text-red" : ""}>
+                        imb {signed(book().imbalance_pct)}%
+                      </span>
+                      <Show when={book().bid_wall}>
+                        {(wall) => <span class="text-green/80">Wall {compactUsd(wall().notional_usd)}</span>}
+                      </Show>
+                      <Show when={book().ask_wall}>
+                        {(wall) => <span class="text-red/80">Wall {compactUsd(wall().notional_usd)}</span>}
+                      </Show>
+                    </div>
+                  </div>
+                )}
+              </Show>
               <Show when={props.whale}>
                 {(whale) => <SymbolWhale signal={whale()} />}
               </Show>

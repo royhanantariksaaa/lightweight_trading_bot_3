@@ -71,6 +71,18 @@ impl WhaleContext {
         // Returns [-1, 1]: +1 = all bullish whales, -1 = all bearish whales
         ((bullish_weight - bearish_weight) / total).clamp(-1.0, 1.0)
     }
+
+    /// Returns a score representing global whale activity [0, 1.0].
+    /// High score means many whales are currently active across all symbols.
+    pub fn global_activity_score(&self) -> f64 {
+        if self.signals.is_empty() {
+            return 0.0;
+        }
+        // Count signals in the last 2 minutes (assume signals are recent)
+        // Since we don't have a reliable relative clock here, we'll just use the signal count vs a threshold
+        let count = self.signals.len() as f64;
+        (count / 15.0).clamp(0.0, 1.0) // 15+ recent signals = max activity
+    }
 }
 
 pub fn find_last_minute_5m_snipes(
@@ -140,6 +152,18 @@ fn pick_directional_outcome(
     // Stronger moves = higher confidence in the direction
     let momentum = price_delta_pct.abs().clamp(0.0, 0.02) / 0.02; // normalize to [0, 1]
 
+    // Step 4.1: Symbol-specific risk multiplier
+    // 'Cheap' coins or those prone to rug pulls get a penalty
+    let symbol_risk_penalty = match symbol.as_str() {
+        "XRP" | "SOL" | "DOGE" | "PEPE" => 0.15, // Stricter for these
+        _ => 0.0,
+    };
+
+    // Step 4.2: Activity-based strictness
+    // If whales are super active, we want a clearer signal (higher edge) before jumping in
+    let activity_score = whale_ctx.global_activity_score();
+    let activity_penalty = activity_score * 0.1; // Up to 0.1 additional edge required if market is wild
+
     // Time pressure: closer to expiry = less time for reversal = more confident
     let time_pressure = 1.0
         - (market.seconds_to_expiry as f64 / settings.snipe_window_seconds as f64).clamp(0.0, 1.0);
@@ -157,10 +181,11 @@ fn pick_directional_outcome(
     };
 
     // Composite confidence score
-    let confidence = 0.35 * momentum       // price already moving our way
+    let confidence = (0.35 * momentum       // price already moving our way
         + 0.25 * time_pressure             // closer to expiry = safer
         + 0.20 * liquidity_quality          // liquid markets are more reliable
-        + 0.20 * whale_alignment;           // whale support
+        + 0.20 * whale_alignment)           // whale support
+        - symbol_risk_penalty;              // Apply penalty for rug-prone coins
 
     // Step 5: Urgency Bypass - If last 30 seconds, we always buy the winner
     let is_urgent = market.seconds_to_expiry <= 30;
@@ -172,7 +197,10 @@ fn pick_directional_outcome(
         confidence - (buy_price - 0.5).max(0.0)
     };
 
-    if !is_urgent && expected_edge < settings.snipe_min_edge {
+    // Apply activity-based edge requirement
+    let adjusted_min_edge = settings.snipe_min_edge + activity_penalty;
+
+    if !is_urgent && expected_edge < adjusted_min_edge {
         return None;
     }
 

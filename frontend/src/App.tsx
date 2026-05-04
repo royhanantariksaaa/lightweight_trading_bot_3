@@ -81,6 +81,7 @@ export function App() {
             <Metric label="Mode" value={live() ? "LIVE" : "PAPER"} hot={live()} icon={Activity} />
             <Metric label="CLOB WS" value={wsState()} hot={wsState() === "live"} icon={Wifi} />
             <Metric label="RTDS" value={rtdsState()} hot={rtdsState() === "live"} icon={Zap} />
+            <Metric label="Whale Act" value={`${Math.round(current().global_activity_score * 100)}%`} hot={current().global_activity_score > 0.5} icon={TrendingUp} />
             <Metric label="Scan" value={formatTime(current().last_scan_at)} icon={Eye} />
             <Metric label="Markets" value={String(current().watched_markets.length)} icon={LineChart} />
             <button type="button" class="self-stretch min-w-[82px] min-h-[38px] inline-flex items-center justify-center gap-1.5 text-[#dbe5ee] bg-[#172028] text-[0.74rem] font-extrabold hover:brightness-110 border-0 cursor-pointer transition-all duration-200" onClick={refresh} title="Refresh scanner status">
@@ -100,6 +101,7 @@ export function App() {
                     market={market()}
                     candidates={candidates()}
                     whale={whaleBySymbol().get(symbol)}
+                    binanceBook={current().binance_books[symbol]}
                     live={live()}
                     lastScanAt={current().last_scan_at}
                     nowMs={clock()}

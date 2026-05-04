@@ -36,6 +36,8 @@ export type DashboardStatus = {
   watched_markets: WatchedMarket[];
   latest_whale_signal?: WhaleSignal | null;
   whale_signals: WhaleSignal[];
+  binance_books: Record<string, BinanceBookInfo>;
+  global_activity_score: number;
   activities: ActivityLog[];
   last_error?: string | null;
   dry_run: boolean;
@@ -121,6 +123,15 @@ export type WhaleSignal = {
   target_price: number;
   required_notional: number;
   signal: string;
+  imbalance_pct: number;
+  bid_wall?: WhaleWallInfo | null;
+  ask_wall?: WhaleWallInfo | null;
+  need_up_10: number;
+  need_down_10: number;
+};
+
+export type BinanceBookInfo = {
+  symbol: string;
   imbalance_pct: number;
   bid_wall?: WhaleWallInfo | null;
   ask_wall?: WhaleWallInfo | null;

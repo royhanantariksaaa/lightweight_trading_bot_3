@@ -34,6 +34,8 @@ pub struct DashboardState {
     pub watched_markets: Vec<MarketSnapshot>,
     pub latest_whale_signal: Option<WhaleSignal>,
     pub whale_signals: Vec<WhaleSignal>,
+    pub binance_books: std::collections::HashMap<String, BinanceBookInfo>,
+    pub global_activity_score: f64,
     pub last_snipe: Option<SnipeSignal>,
     pub last_error: Option<String>,
     pub dry_run: bool,
@@ -82,6 +84,16 @@ pub struct WhaleSignal {
     pub target_price: f64,
     pub required_notional: f64,
     pub signal: String,
+    pub imbalance_pct: f64,
+    pub bid_wall: Option<WhaleWallInfo>,
+    pub ask_wall: Option<WhaleWallInfo>,
+    pub need_up_10: f64,
+    pub need_down_10: f64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct BinanceBookInfo {
+    pub symbol: String,
     pub imbalance_pct: f64,
     pub bid_wall: Option<WhaleWallInfo>,
     pub ask_wall: Option<WhaleWallInfo>,
