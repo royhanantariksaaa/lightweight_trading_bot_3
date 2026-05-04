@@ -21,7 +21,7 @@ use crate::dashboard::{DashboardState, SharedDashboard, serve_dashboard};
 use crate::llm::LlmReporter;
 use crate::live::{
     buy_request_from_snipe, cancel_live_order, fetch_wallet_snapshot, post_live_order,
-    redeem_winnings, sell_request_from_position,
+    hide_stale_display_orders, redeem_winnings, sell_request_from_position,
 };
 use crate::polymarket::PolymarketClient;
 use crate::snipe::{WhaleContext, find_last_minute_5m_snipes};
@@ -186,7 +186,7 @@ async fn run_bot(
                     let whale_signals = dashboard_state.read().await.whale_signals.clone();
                     let whale_ctx = WhaleContext { signals: whale_signals };
                     let signals = find_last_minute_5m_snipes(&settings, &markets, &whale_ctx);
-                    let wallet = fetch_wallet_snapshot(&settings).await;
+                    let mut wallet = fetch_wallet_snapshot(&settings).await;
                     for order in stale_live_orders(&wallet, settings.maker_order_ttl_ms) {
                         match cancel_live_order(&settings, &order.id).await {
                             Ok(response) if response.canceled => {
@@ -206,6 +206,7 @@ async fn run_bot(
                             }
                         }
                     }
+                    hide_stale_display_orders(&settings, &mut wallet);
                     for signal in &signals {
                         if signal.dry_run {
                             info!(?signal, "DRY RUN: last-minute 5m snipe candidate");

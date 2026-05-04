@@ -473,6 +473,19 @@ fn decimal_to_f64(value: &Decimal) -> f64 {
     value.to_string().parse::<f64>().unwrap_or(0.0)
 }
 
+pub fn hide_stale_display_orders(settings: &Settings, wallet: &mut WalletSnapshot) {
+    wallet
+        .open_orders
+        .retain(|order| !is_stale_display_order(order, settings.maker_order_ttl_ms));
+}
+
+fn is_stale_display_order(order: &OpenOrderSnapshot, ttl_ms: i64) -> bool {
+    let cutoff = chrono::Utc::now() - chrono::Duration::milliseconds(ttl_ms.max(5_000) * 2);
+    chrono::DateTime::parse_from_rfc3339(&order.created_at)
+        .map(|created_at| created_at.with_timezone(&chrono::Utc) <= cutoff)
+        .unwrap_or(false)
+}
+
 fn guarded_request(
     settings: &Settings,
     token_id: String,

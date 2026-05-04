@@ -12,7 +12,8 @@ use uuid::Uuid;
 
 use crate::config::{RuntimeSettingsUpdate, Settings};
 use crate::live::{
-    WalletSnapshot, buy_request_from_market, fetch_wallet_snapshot, post_live_order,
+    WalletSnapshot, buy_request_from_market, fetch_wallet_snapshot, hide_stale_display_orders,
+    post_live_order,
 };
 use crate::polymarket::MarketSnapshot;
 use crate::snipe::SnipeSignal;
@@ -360,7 +361,8 @@ async fn update_settings(
     let mut settings = context.settings.write().await;
     match settings.apply_runtime_update(update) {
         Ok(()) => {
-            let wallet = fetch_wallet_snapshot(&settings).await;
+            let mut wallet = fetch_wallet_snapshot(&settings).await;
+            hide_stale_display_orders(&settings, &mut wallet);
             let mut dashboard = context.shared.write().await;
             dashboard.dry_run = settings.dry_run;
             dashboard.allow_live_buys = settings.allow_live_buys;
