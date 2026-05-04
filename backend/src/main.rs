@@ -128,8 +128,13 @@ async fn run_bot(
     loop {
         let settings = runtime_settings.read().await.clone();
         if settings.enable_last_minute_5m_snipe {
-            match polymarket.fetch_active_5m_markets(&settings).await {
-                Ok(markets) => {
+            let fetch_result = tokio::time::timeout(
+                Duration::from_secs(20),
+                polymarket.fetch_active_5m_markets(&settings),
+            )
+            .await;
+            match fetch_result {
+                Ok(Ok(markets)) => {
                     let active_slugs = markets
                         .iter()
                         .map(|market| market.slug.clone())
@@ -373,9 +378,17 @@ async fn run_bot(
                         .map(|market| (market.slug.clone(), market.clone()))
                         .collect();
                 }
-                Err(error) => {
+                Ok(Err(error)) => {
                     warn!(%error, "snipe scan failed");
-                    dashboard_state.write().await.last_error = Some(error.to_string());
+                    let mut dash = dashboard_state.write().await;
+                    dash.last_error = Some(error.to_string());
+                    dash.last_scan_at = Some(Utc::now().to_rfc3339());
+                }
+                Err(_) => {
+                    warn!("snipe market fetch timed out after 20s");
+                    let mut dash = dashboard_state.write().await;
+                    dash.last_error = Some("market fetch timed out".to_string());
+                    dash.last_scan_at = Some(Utc::now().to_rfc3339());
                 }
             }
         }

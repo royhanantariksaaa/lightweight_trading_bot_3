@@ -1,6 +1,6 @@
 import { Bot, Code2, FileText, RefreshCw } from "lucide-solid";
 import { createSignal, For, onMount, Show } from "solid-js";
-import { fetchLlmReport, fetchLlmReports } from "../../api";
+import { fetchHermesReport, fetchHermesReports } from "../../api";
 import type { LlmReportDetail, LlmReportListItem } from "../../types";
 
 export function LlmReviewPanel() {
@@ -13,7 +13,7 @@ export function LlmReviewPanel() {
     setLoading(true);
     setMessage("");
     try {
-      const items = await fetchLlmReports();
+      const items = await fetchHermesReports();
       setReports(items);
       if (!selected() && items[0]) void openReport(items[0].id);
     } catch (error) {
@@ -27,7 +27,7 @@ export function LlmReviewPanel() {
     setLoading(true);
     setMessage("");
     try {
-      const result = await fetchLlmReport(id);
+      const result = await fetchHermesReport(id);
       if (!result.ok || !result.report) {
         setMessage(result.error ?? "Report could not be opened.");
         return;
@@ -40,12 +40,13 @@ export function LlmReviewPanel() {
     }
   }
 
-  const selectedPatch = () => selected()?.code_patch_unified_diff?.trim() || "";
   const selectedResponse = () => {
     const detail = selected();
     if (!detail) return "";
-    if (detail.llm_response) return JSON.stringify(detail.llm_response, null, 2);
-    return detail.llm_response_raw ?? "";
+    if (typeof detail === "object" && detail !== null) {
+      return JSON.stringify(detail, null, 2);
+    }
+    return String(detail);
   };
 
   onMount(() => {
@@ -56,10 +57,10 @@ export function LlmReviewPanel() {
     <div class="bg-deep-bg border border-soft-line rounded-xl overflow-hidden flex-1 min-h-[240px] flex flex-col shadow-2xl">
       <div class="px-4 py-3 border-b border-soft-line flex items-center justify-between bg-black/20">
         <div class="flex items-center gap-2 min-w-0">
-          <Bot size={16} class="text-blue" />
-          <h2 class="text-sm font-bold text-white uppercase tracking-wider truncate">LLM Reviews</h2>
+          <Bot size={16} class="text-green" />
+          <h2 class="text-sm font-bold text-white uppercase tracking-wider truncate">Agent Reviews</h2>
         </div>
-        <button type="button" class="inline-flex items-center justify-center text-soft-text hover:text-white border-0 bg-transparent cursor-pointer" onClick={refreshReports} title="Refresh LLM reports">
+        <button type="button" class="inline-flex items-center justify-center text-soft-text hover:text-white border-0 bg-transparent cursor-pointer" onClick={refreshReports} title="Refresh reports">
           <RefreshCw size={15} class={loading() ? "animate-spin" : ""} />
         </button>
       </div>
@@ -69,14 +70,14 @@ export function LlmReviewPanel() {
           <div class="h-full flex flex-col items-center justify-center text-soft-text p-6 text-center space-y-2 opacity-60">
             <FileText size={28} />
             <p class="text-xs font-bold uppercase tracking-tight">No reports yet</p>
-            <p class="text-[0.65rem]">Closed-market LLM reports will appear here.</p>
+            <p class="text-[0.65rem]">Hermes Agent reports will appear here.</p>
           </div>
         }>
           <For each={reports()}>
             {(report) => (
               <button
                 type="button"
-                class={`w-full text-left p-2.5 rounded-lg border bg-soft-line/10 hover:brightness-110 cursor-pointer ${selected()?.id === report.id ? "border-blue" : "border-soft-line"}`}
+                class={`w-full text-left p-2.5 rounded-lg border bg-soft-line/10 hover:brightness-110 cursor-pointer ${selected()?.id === report.id ? "border-green" : "border-soft-line"}`}
                 onClick={() => openReport(report.id)}
               >
                 <div class="flex items-center justify-between gap-2">
@@ -100,13 +101,8 @@ export function LlmReviewPanel() {
 
         <Show when={selected()}>
           <div class="mt-3 border-t border-soft-line pt-3 grid gap-2">
-            <div class="text-[0.7rem] font-black uppercase text-white">Model Response</div>
-            <pre class="max-h-[180px] overflow-auto custom-scrollbar whitespace-pre-wrap break-words rounded-lg border border-soft-line bg-[#0d1318] p-2 text-[0.64rem] leading-relaxed text-[#b9c7d4]">{selectedResponse() || "No model response saved yet."}</pre>
-            <div class="flex items-center gap-1.5 text-[0.7rem] font-black uppercase text-white">
-              <Code2 size={14} class="text-green" />
-              <span>Proposed Patch</span>
-            </div>
-            <pre class="max-h-[220px] overflow-auto custom-scrollbar whitespace-pre-wrap break-words rounded-lg border border-soft-line bg-[#0d1318] p-2 text-[0.64rem] leading-relaxed text-[#b9c7d4]">{selectedPatch() || "No code patch proposed."}</pre>
+            <div class="text-[0.7rem] font-black uppercase text-white">Market Report</div>
+            <pre class="max-h-[300px] overflow-auto custom-scrollbar whitespace-pre-wrap break-words rounded-lg border border-soft-line bg-[#0d1318] p-2 text-[0.64rem] leading-relaxed text-[#b9c7d4]">{selectedResponse() || "No report data."}</pre>
           </div>
         </Show>
       </div>
