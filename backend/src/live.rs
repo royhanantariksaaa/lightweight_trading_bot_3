@@ -519,6 +519,19 @@ fn guarded_request(
     let mut amount_usd = price * size;
 
     let is_fak = settings.live_order_type.trim().eq_ignore_ascii_case("FAK");
+    if is_fak && matches!(side, LiveSide::Buy) {
+        // Market-buy amount validation is strict; integer shares avoid maker/taker precision rejects.
+        let whole_shares = size.floor();
+        if whole_shares < 1.0 {
+            bail!(
+                "blocked live order: FAK buy computed {:.4} shares, below 1 whole share at price {:.2}",
+                size,
+                price
+            );
+        }
+        size = whole_shares;
+        amount_usd = price * size;
+    }
     // Keep the legacy 5-share bump for resting order types; FAK is allowed to submit smaller size.
     if !is_fak && size < 5.0 {
         let bumped_amount = price * 5.0;
