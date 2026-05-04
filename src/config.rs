@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Result, bail};
 use std::path::PathBuf;
 use tracing::warn;
 
@@ -59,6 +59,7 @@ pub struct Settings {
     pub polymarket_chain_id: u64,
     pub polymarket_signature_type: Option<u8>,
     pub polymarket_funder_address: String,
+    pub polymarket_private_key: Option<String>,
 }
 
 impl Settings {
@@ -117,7 +118,40 @@ impl Settings {
             polymarket_chain_id: env_parse("POLYMARKET_CHAIN_ID", 137)?,
             polymarket_signature_type: env_optional_parse("SIGNATURE_TYPE")?,
             polymarket_funder_address: env_string("FUNDER_ADDRESS", ""),
+            polymarket_private_key: env_optional_string("POLYMARKET_PRIVATE_KEY"),
         })
+    }
+
+    pub fn apply_runtime_update(&mut self, update: RuntimeSettingsUpdate) -> Result<()> {
+        let mut next = self.clone();
+        next.dry_run = update.dry_run;
+        next.allow_live_buys = update.allow_live_buys;
+        next.live_max_order_usd = update.live_max_order_usd;
+        next.polymarket_signature_type = update.signature_type;
+        next.polymarket_funder_address = update.funder_address.trim().to_string();
+        if let Some(private_key) = update.private_key {
+            let trimmed = private_key.trim();
+            next.polymarket_private_key = if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            };
+        }
+        next.validate_runtime_wallet()?;
+        *self = next;
+        Ok(())
+    }
+
+    pub fn validate_runtime_wallet(&self) -> Result<()> {
+        if !self.dry_run && self.allow_live_buys && self.polymarket_private_key.is_none() {
+            bail!("live buys require a Polymarket private key");
+        }
+        if !self.polymarket_funder_address.trim().is_empty()
+            && self.polymarket_signature_type.is_none()
+        {
+            bail!("funder address requires signature type");
+        }
+        Ok(())
     }
 
     pub fn log_safety_summary(&self) {
@@ -154,6 +188,16 @@ impl Settings {
     }
 }
 
+#[derive(Clone, Debug, serde::Deserialize)]
+pub struct RuntimeSettingsUpdate {
+    pub dry_run: bool,
+    pub allow_live_buys: bool,
+    pub live_max_order_usd: f64,
+    pub funder_address: String,
+    pub signature_type: Option<u8>,
+    pub private_key: Option<String>,
+}
+
 fn parse_symbols(raw: &str) -> Vec<String> {
     let mut symbols = raw
         .split(',')
@@ -168,6 +212,17 @@ fn parse_symbols(raw: &str) -> Vec<String> {
 
 fn env_string(key: &str, default: &str) -> String {
     std::env::var(key).unwrap_or_else(|_| default.to_string())
+}
+
+fn env_optional_string(key: &str) -> Option<String> {
+    std::env::var(key).ok().and_then(|value| {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    })
 }
 
 fn env_bool(key: &str, default: bool) -> bool {

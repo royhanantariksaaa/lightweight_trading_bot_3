@@ -11,9 +11,10 @@
     "preview": "vite preview --host 127.0.0.1"
   },
   "dependencies": {
+    "lucide-solid": "^1.14.0",
+    "solid-js": "^1.9.10",
     "vite": "^7.3.0",
-    "vite-plugin-solid": "^2.11.8",
-    "solid-js": "^1.9.10"
+    "vite-plugin-solid": "^2.11.8"
   },
   "devDependencies": {
     "concurrently": "^9.2.1",

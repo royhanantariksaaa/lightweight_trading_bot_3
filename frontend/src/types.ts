@@ -34,9 +34,85 @@ export type DashboardStatus = {
   scanned_markets: number;
   candidates: Candidate[];
   watched_markets: WatchedMarket[];
+  latest_whale_signal?: WhaleSignal | null;
+  whale_signals: WhaleSignal[];
   last_error?: string | null;
   dry_run: boolean;
   allow_live_buys: boolean;
+  live_max_order_usd: number;
+  wallet_configured: boolean;
+  funder_address: string;
+  signature_type?: number | null;
+  wallet: WalletSnapshot;
+};
+
+export type WalletSnapshot = {
+  address?: string | null;
+  cash?: number | null;
+  allowance?: number | null;
+  position_value?: number | null;
+  portfolio_value?: number | null;
+  positions_count: number;
+  open_orders: OpenOrderSnapshot[];
+  updated_at?: string | null;
+  error?: string | null;
+};
+
+export type OpenOrderSnapshot = {
+  id: string;
+  market: string;
+  outcome: string;
+  side: string;
+  price: number;
+  original_size: number;
+  size_matched: number;
+  created_at: string;
+};
+
+export type ManualOrderRequest = {
+  market_slug: string;
+  outcome: string;
+  amount_usd: number;
+};
+
+export type ManualOrderResponse = {
+  accepted: boolean;
+  live: boolean;
+  message: string;
+  order_id?: string | null;
+};
+
+export type RuntimeSettingsUpdate = {
+  dry_run: boolean;
+  allow_live_buys: boolean;
+  live_max_order_usd: number;
+  funder_address: string;
+  signature_type?: number | null;
+  private_key?: string | null;
+};
+
+export type WhaleWallInfo = {
+  price: number;
+  notional_usd: number;
+};
+
+export type WhaleSignal = {
+  timestamp: string;
+  market: string;
+  symbol: string;
+  side: "BUY" | "SELL" | string;
+  tier: string;
+  trade_price: number;
+  quantity: number;
+  notional_usd: number;
+  target_price: number;
+  required_notional: number;
+  signal: string;
+  imbalance_pct: number;
+  bid_wall?: WhaleWallInfo | null;
+  ask_wall?: WhaleWallInfo | null;
+  need_up_10: number;
+  need_down_10: number;
 };
 
 export type LiveQuote = {

@@ -1,10 +1,18 @@
-use axum::{Json, Router, extract::State, response::Html, routing::get};
-use serde::Serialize;
+use axum::{
+    Json, Router,
+    extract::State,
+    response::Html,
+    routing::{get, post},
+};
+use serde::{Deserialize, Serialize};
 use std::{net::SocketAddr, sync::Arc};
 use tokio::sync::RwLock;
 use tower_http::cors::CorsLayer;
 
-use crate::config::Settings;
+use crate::config::{RuntimeSettingsUpdate, Settings};
+use crate::live::{
+    WalletSnapshot, buy_request_from_market, fetch_wallet_snapshot, post_live_order,
+};
 use crate::polymarket::MarketSnapshot;
 use crate::snipe::SnipeSignal;
 
@@ -19,6 +27,11 @@ pub struct DashboardState {
     pub last_error: Option<String>,
     pub dry_run: bool,
     pub allow_live_buys: bool,
+    pub live_max_order_usd: f64,
+    pub wallet_configured: bool,
+    pub funder_address: String,
+    pub signature_type: Option<u8>,
+    pub wallet: WalletSnapshot,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -47,25 +60,153 @@ pub struct WhaleSignal {
     pub need_down_10: f64,
 }
 
+#[derive(Clone, Debug, Deserialize)]
+pub struct ManualOrderRequest {
+    pub market_slug: String,
+    pub outcome: String,
+    pub amount_usd: f64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ManualOrderResponse {
+    pub accepted: bool,
+    pub live: bool,
+    pub message: String,
+    pub order_id: Option<String>,
+}
+
+#[derive(Clone)]
+struct DashboardContext {
+    settings: Arc<RwLock<Settings>>,
+    shared: SharedDashboard,
+}
+
 pub type SharedDashboard = Arc<RwLock<DashboardState>>;
 
-pub async fn serve_dashboard(settings: Settings, shared: SharedDashboard) -> anyhow::Result<()> {
+pub async fn serve_dashboard(
+    settings: Arc<RwLock<Settings>>,
+    shared: SharedDashboard,
+) -> anyhow::Result<()> {
+    let context = DashboardContext {
+        settings: settings.clone(),
+        shared,
+    };
     let app = Router::new()
         .route("/", get(index))
         .route("/api/status", get(status))
+        .route("/api/settings", post(update_settings))
+        .route("/api/manual-order", post(manual_order))
         .layer(CorsLayer::permissive())
-        .with_state(shared);
+        .with_state(context);
 
-    let addr: SocketAddr =
-        format!("{}:{}", settings.dashboard_host, settings.dashboard_port).parse()?;
+    let bind_settings = settings.read().await.clone();
+    let addr: SocketAddr = format!(
+        "{}:{}",
+        bind_settings.dashboard_host, bind_settings.dashboard_port
+    )
+    .parse()?;
     tracing::info!(%addr, "dashboard listening");
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).await?;
     Ok(())
 }
 
-async fn status(State(shared): State<SharedDashboard>) -> Json<DashboardState> {
-    Json(shared.read().await.clone())
+async fn status(State(context): State<DashboardContext>) -> Json<DashboardState> {
+    Json(context.shared.read().await.clone())
+}
+
+async fn manual_order(
+    State(context): State<DashboardContext>,
+    Json(request): Json<ManualOrderRequest>,
+) -> Json<ManualOrderResponse> {
+    let settings = context.settings.read().await.clone();
+    let market = {
+        let dashboard = context.shared.read().await;
+        dashboard
+            .watched_markets
+            .iter()
+            .find(|market| market.slug == request.market_slug)
+            .cloned()
+    };
+    let Some(market) = market else {
+        return Json(ManualOrderResponse {
+            accepted: false,
+            live: false,
+            message: "Market is no longer active in the scanner.".to_string(),
+            order_id: None,
+        });
+    };
+
+    let order =
+        match buy_request_from_market(&settings, &market, &request.outcome, request.amount_usd) {
+            Ok(order) => order,
+            Err(error) => {
+                return Json(ManualOrderResponse {
+                    accepted: false,
+                    live: false,
+                    message: error.to_string(),
+                    order_id: None,
+                });
+            }
+        };
+
+    if settings.dry_run || !settings.allow_live_buys {
+        return Json(ManualOrderResponse {
+            accepted: true,
+            live: false,
+            message: format!(
+                "Paper order prepared: {} {} for ${:.2} at {:.3}.",
+                order.market_slug, order.outcome, order.amount_usd, order.price
+            ),
+            order_id: None,
+        });
+    }
+
+    match post_live_order(&settings, &order).await {
+        Ok(response) if response.success => Json(ManualOrderResponse {
+            accepted: true,
+            live: true,
+            message: "Live order accepted by Polymarket.".to_string(),
+            order_id: response.order_id,
+        }),
+        Ok(response) => Json(ManualOrderResponse {
+            accepted: false,
+            live: true,
+            message: response.raw.to_string(),
+            order_id: response.order_id,
+        }),
+        Err(error) => Json(ManualOrderResponse {
+            accepted: false,
+            live: true,
+            message: error.to_string(),
+            order_id: None,
+        }),
+    }
+}
+
+async fn update_settings(
+    State(context): State<DashboardContext>,
+    Json(update): Json<RuntimeSettingsUpdate>,
+) -> Json<serde_json::Value> {
+    let mut settings = context.settings.write().await;
+    match settings.apply_runtime_update(update) {
+        Ok(()) => {
+            let wallet = fetch_wallet_snapshot(&settings).await;
+            let mut dashboard = context.shared.write().await;
+            dashboard.dry_run = settings.dry_run;
+            dashboard.allow_live_buys = settings.allow_live_buys;
+            dashboard.live_max_order_usd = settings.live_max_order_usd;
+            dashboard.wallet_configured = settings.polymarket_private_key.is_some();
+            dashboard.funder_address = settings.polymarket_funder_address.clone();
+            dashboard.signature_type = settings.polymarket_signature_type;
+            dashboard.wallet = wallet;
+            Json(serde_json::json!({ "ok": true }))
+        }
+        Err(error) => Json(serde_json::json!({
+            "ok": false,
+            "error": error.to_string()
+        })),
+    }
 }
 
 async fn index() -> Html<&'static str> {

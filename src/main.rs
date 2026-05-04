@@ -16,7 +16,7 @@ use tracing::{info, warn};
 
 use crate::config::Settings;
 use crate::dashboard::{DashboardState, SharedDashboard, serve_dashboard};
-use crate::live::{buy_request_from_snipe, post_live_order};
+use crate::live::{buy_request_from_snipe, fetch_wallet_snapshot, post_live_order};
 use crate::polymarket::PolymarketClient;
 use crate::snipe::find_last_minute_5m_snipes;
 use crate::state::{BotState, now_ms};
@@ -32,16 +32,21 @@ async fn main() -> Result<()> {
 
     let settings = Settings::from_env()?;
     settings.log_safety_summary();
+    let runtime_settings = Arc::new(RwLock::new(settings.clone()));
 
     let dashboard_state: SharedDashboard = Arc::new(RwLock::new(DashboardState {
         dry_run: settings.dry_run,
         allow_live_buys: settings.allow_live_buys,
+        live_max_order_usd: settings.live_max_order_usd,
+        wallet_configured: settings.polymarket_private_key.is_some(),
+        funder_address: settings.polymarket_funder_address.clone(),
+        signature_type: settings.polymarket_signature_type,
         ..DashboardState::default()
     }));
 
-    let dashboard_settings = settings.clone();
+    let dashboard_settings = runtime_settings.clone();
     let whale_settings = settings.clone();
-    let bot_settings = settings;
+    let bot_settings = runtime_settings.clone();
     let dashboard_handle = tokio::spawn({
         let dashboard_state = dashboard_state.clone();
         async move {
@@ -92,16 +97,22 @@ async fn wait_optional_task(handle: Option<tokio::task::JoinHandle<()>>) {
     }
 }
 
-async fn run_bot(settings: Settings, dashboard_state: SharedDashboard) -> Result<()> {
-    let mut state = BotState::load_or_default(&settings.state_path).await?;
-    let polymarket = PolymarketClient::new(&settings)?;
+async fn run_bot(
+    runtime_settings: Arc<RwLock<Settings>>,
+    dashboard_state: SharedDashboard,
+) -> Result<()> {
+    let initial_settings = runtime_settings.read().await.clone();
+    let mut state = BotState::load_or_default(&initial_settings.state_path).await?;
+    let polymarket = PolymarketClient::new(&initial_settings)?;
     let mut last_live_order_ms = 0_i64;
 
     loop {
+        let settings = runtime_settings.read().await.clone();
         if settings.enable_last_minute_5m_snipe {
             match polymarket.fetch_active_5m_markets(&settings).await {
                 Ok(markets) => {
                     let signals = find_last_minute_5m_snipes(&settings, &markets);
+                    let wallet = fetch_wallet_snapshot(&settings).await;
                     for signal in &signals {
                         if signal.dry_run {
                             info!(?signal, "DRY RUN: last-minute 5m snipe candidate");
@@ -146,6 +157,11 @@ async fn run_bot(settings: Settings, dashboard_state: SharedDashboard) -> Result
                     dashboard.last_error = None;
                     dashboard.dry_run = settings.dry_run;
                     dashboard.allow_live_buys = settings.allow_live_buys;
+                    dashboard.live_max_order_usd = settings.live_max_order_usd;
+                    dashboard.wallet_configured = settings.polymarket_private_key.is_some();
+                    dashboard.funder_address = settings.polymarket_funder_address.clone();
+                    dashboard.signature_type = settings.polymarket_signature_type;
+                    dashboard.wallet = wallet;
                 }
                 Err(error) => {
                     warn!(%error, "snipe scan failed");

@@ -1,14 +1,40 @@
 use anyhow::{Context, Result, anyhow, bail};
-use polymarket_client_sdk_v2::PRIVATE_KEY_VAR;
-use polymarket_client_sdk_v2::auth::{LocalSigner, Signer as _};
-use polymarket_client_sdk_v2::clob::types::{OrderType, Side, SignatureType};
+use polymarket_client_sdk_v2::auth::{LocalSigner, Normal, Signer as _};
+use polymarket_client_sdk_v2::clob::types::request::{BalanceAllowanceRequest, OrdersRequest};
+use polymarket_client_sdk_v2::clob::types::{AssetType, OrderType, Side, SignatureType};
 use polymarket_client_sdk_v2::clob::{Client as ClobClient, Config as ClobConfig};
 use polymarket_client_sdk_v2::types::{Address, Decimal, U256};
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 
 use crate::config::Settings;
+use crate::polymarket::MarketSnapshot;
 use crate::snipe::SnipeSignal;
+
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct WalletSnapshot {
+    pub address: Option<String>,
+    pub cash: Option<f64>,
+    pub allowance: Option<f64>,
+    pub position_value: Option<f64>,
+    pub portfolio_value: Option<f64>,
+    pub positions_count: usize,
+    pub open_orders: Vec<OpenOrderSnapshot>,
+    pub updated_at: String,
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct OpenOrderSnapshot {
+    pub id: String,
+    pub market: String,
+    pub outcome: String,
+    pub side: String,
+    pub price: f64,
+    pub original_size: f64,
+    pub size_matched: f64,
+    pub created_at: String,
+}
 
 #[derive(Clone, Debug, Serialize)]
 pub struct LiveOrderRequest {
@@ -55,6 +81,37 @@ pub fn buy_request_from_snipe(
     )
 }
 
+pub fn buy_request_from_market(
+    settings: &Settings,
+    market: &MarketSnapshot,
+    outcome_name: &str,
+    amount_usd: f64,
+) -> Result<LiveOrderRequest> {
+    let outcome = market
+        .outcomes
+        .iter()
+        .find(|outcome| outcome.name.eq_ignore_ascii_case(outcome_name))
+        .ok_or_else(|| anyhow!("outcome {outcome_name} not found for {}", market.slug))?;
+    let token_id = outcome
+        .token_id
+        .clone()
+        .ok_or_else(|| anyhow!("cannot place order without clob token_id"))?;
+    let price = outcome
+        .best_ask
+        .or(outcome.best_bid)
+        .unwrap_or(outcome.price);
+    guarded_request(
+        settings,
+        token_id,
+        market.slug.clone(),
+        outcome.name.clone(),
+        LiveSide::Buy,
+        price,
+        (amount_usd / price).max(0.0),
+        Some(market.seconds_to_expiry),
+    )
+}
+
 pub async fn post_live_order(
     settings: &Settings,
     request: &LiveOrderRequest,
@@ -63,35 +120,15 @@ pub async fn post_live_order(
         bail!("blocked live order: DRY_RUN=true");
     }
 
-    let private_key = std::env::var(PRIVATE_KEY_VAR)
-        .with_context(|| format!("{PRIVATE_KEY_VAR} is required for live trading"))?;
+    let private_key = settings
+        .polymarket_private_key
+        .as_deref()
+        .context("POLYMARKET_PRIVATE_KEY is required for live trading")?;
     let signer = LocalSigner::from_str(private_key.trim())
         .context("failed to parse POLYMARKET_PRIVATE_KEY")?
         .with_chain_id(Some(settings.polymarket_chain_id));
 
-    let mut auth = ClobClient::new(&settings.polymarket_clob_host, ClobConfig::default())
-        .context("failed to create Polymarket CLOB SDK client")?
-        .authentication_builder(&signer);
-
-    if let Some(signature_type) = sdk_signature_type(settings.polymarket_signature_type)? {
-        auth = auth.signature_type(signature_type);
-    }
-
-    let funder = settings.polymarket_funder_address.trim();
-    if !funder.is_empty() {
-        if settings.polymarket_signature_type.is_none() {
-            bail!("FUNDER_ADDRESS requires SIGNATURE_TYPE=1, 2, or 3");
-        }
-        auth = auth.funder(
-            Address::from_str(funder)
-                .with_context(|| format!("invalid FUNDER_ADDRESS={funder}"))?,
-        );
-    }
-
-    let client = auth
-        .authenticate()
-        .await
-        .context("failed to authenticate Polymarket CLOB SDK client")?;
+    let client = authenticated_clob_client(settings, &signer).await?;
 
     let token_id = U256::from_str(&request.token_id)
         .with_context(|| format!("invalid CLOB token_id={}", request.token_id))?;
@@ -127,6 +164,170 @@ pub async fn post_live_order(
     })
 }
 
+pub async fn fetch_wallet_snapshot(settings: &Settings) -> WalletSnapshot {
+    let updated_at = chrono::Utc::now().to_rfc3339();
+    match try_fetch_wallet_snapshot(settings, updated_at.clone()).await {
+        Ok(snapshot) => snapshot,
+        Err(error) => WalletSnapshot {
+            updated_at,
+            error: Some(error.to_string()),
+            ..WalletSnapshot::default()
+        },
+    }
+}
+
+async fn try_fetch_wallet_snapshot(
+    settings: &Settings,
+    updated_at: String,
+) -> Result<WalletSnapshot> {
+    let private_key = match settings.polymarket_private_key.as_deref() {
+        Some(value) if !value.trim().is_empty() => value.to_string(),
+        _ => {
+            return Ok(WalletSnapshot {
+                updated_at,
+                error: Some("Polymarket private key not configured".to_string()),
+                ..WalletSnapshot::default()
+            });
+        }
+    };
+
+    let signer = LocalSigner::from_str(private_key.trim())
+        .context("failed to parse POLYMARKET_PRIVATE_KEY")?
+        .with_chain_id(Some(settings.polymarket_chain_id));
+    let client = authenticated_clob_client(settings, &signer).await?;
+    let address = wallet_address_for_profile(settings, client.address().to_string());
+    let signature_type =
+        sdk_signature_type(settings.polymarket_signature_type)?.unwrap_or(SignatureType::Eoa);
+    let balance = client
+        .balance_allowance(
+            BalanceAllowanceRequest::builder()
+                .asset_type(AssetType::Collateral)
+                .signature_type(signature_type)
+                .build(),
+        )
+        .await
+        .context("failed to fetch Polymarket wallet balance")?;
+    let cash = decimal_to_f64(&balance.balance);
+    let allowance = balance
+        .allowances
+        .values()
+        .filter_map(|value| value.parse::<f64>().ok())
+        .max_by(|left, right| left.total_cmp(right));
+    let positions = fetch_position_value(&address).await.unwrap_or_default();
+    let open_orders = fetch_open_orders(&client).await.unwrap_or_default();
+
+    Ok(WalletSnapshot {
+        address: Some(address),
+        cash: Some(cash),
+        allowance,
+        position_value: Some(positions.position_value),
+        portfolio_value: Some(cash + positions.position_value),
+        positions_count: positions.positions_count,
+        open_orders,
+        updated_at,
+        error: None,
+    })
+}
+
+async fn authenticated_clob_client<S: polymarket_client_sdk_v2::auth::Signer>(
+    settings: &Settings,
+    signer: &S,
+) -> Result<
+    polymarket_client_sdk_v2::clob::Client<
+        polymarket_client_sdk_v2::auth::state::Authenticated<Normal>,
+    >,
+> {
+    let mut auth = ClobClient::new(&settings.polymarket_clob_host, ClobConfig::default())
+        .context("failed to create Polymarket CLOB SDK client")?
+        .authentication_builder(signer);
+
+    if let Some(signature_type) = sdk_signature_type(settings.polymarket_signature_type)? {
+        auth = auth.signature_type(signature_type);
+    }
+
+    let funder = settings.polymarket_funder_address.trim();
+    if !funder.is_empty() {
+        if settings.polymarket_signature_type.is_none() {
+            bail!("FUNDER_ADDRESS requires SIGNATURE_TYPE=1, 2, or 3");
+        }
+        auth = auth.funder(
+            Address::from_str(funder)
+                .with_context(|| format!("invalid FUNDER_ADDRESS={funder}"))?,
+        );
+    }
+
+    auth.authenticate()
+        .await
+        .context("failed to authenticate Polymarket CLOB SDK client")
+}
+
+fn wallet_address_for_profile(settings: &Settings, signer_address: String) -> String {
+    let funder = settings.polymarket_funder_address.trim();
+    if funder.is_empty() {
+        signer_address
+    } else {
+        funder.to_string()
+    }
+}
+
+#[derive(Default)]
+struct PositionTotals {
+    position_value: f64,
+    positions_count: usize,
+}
+
+async fn fetch_position_value(address: &str) -> Result<PositionTotals> {
+    let positions = reqwest::Client::new()
+        .get("https://data-api.polymarket.com/positions")
+        .query(&[("user", address), ("limit", "500"), ("sizeThreshold", "0")])
+        .send()
+        .await
+        .context("failed to fetch Polymarket positions")?
+        .error_for_status()
+        .context("Polymarket positions returned error status")?
+        .json::<Vec<serde_json::Value>>()
+        .await
+        .context("failed to decode Polymarket positions")?;
+
+    Ok(PositionTotals {
+        position_value: positions
+            .iter()
+            .filter_map(|position| {
+                position
+                    .get("currentValue")
+                    .and_then(serde_json::Value::as_f64)
+            })
+            .sum(),
+        positions_count: positions.len(),
+    })
+}
+
+async fn fetch_open_orders<S: polymarket_client_sdk_v2::auth::Kind>(
+    client: &polymarket_client_sdk_v2::clob::Client<
+        polymarket_client_sdk_v2::auth::state::Authenticated<S>,
+    >,
+) -> Result<Vec<OpenOrderSnapshot>> {
+    let page = client
+        .orders(&OrdersRequest::builder().build(), None)
+        .await
+        .context("failed to fetch open orders")?;
+    Ok(page
+        .data
+        .into_iter()
+        .take(20)
+        .map(|order| OpenOrderSnapshot {
+            id: order.id,
+            market: order.market.to_string(),
+            outcome: order.outcome,
+            side: format!("{:?}", order.side),
+            price: decimal_to_f64(&order.price),
+            original_size: decimal_to_f64(&order.original_size),
+            size_matched: decimal_to_f64(&order.size_matched),
+            created_at: order.created_at.to_rfc3339(),
+        })
+        .collect())
+}
+
 fn sdk_order_type(raw: &str) -> Result<OrderType> {
     match raw.trim().to_ascii_uppercase().as_str() {
         "GTC" => Ok(OrderType::GTC),
@@ -160,6 +361,10 @@ fn decimal_from_f64(value: f64, label: &str) -> Result<Decimal> {
     }
     Decimal::from_str(&format!("{value:.6}"))
         .with_context(|| format!("failed to convert live order {label}={value} to Decimal"))
+}
+
+fn decimal_to_f64(value: &Decimal) -> f64 {
+    value.to_string().parse::<f64>().unwrap_or(0.0)
 }
 
 fn guarded_request(

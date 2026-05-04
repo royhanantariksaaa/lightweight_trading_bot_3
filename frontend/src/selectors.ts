@@ -1,5 +1,5 @@
 import { symbolFromSlug } from "./market";
-import type { Candidate, WatchedMarket } from "./types";
+import type { Candidate, WatchedMarket, WhaleSignal } from "./types";
 
 export function currentMarketBySymbol(markets: WatchedMarket[]) {
   const map = new Map<string, WatchedMarket>();
@@ -42,4 +42,19 @@ export function scanReferenceSamples(markets: WatchedMarket[], lastScanAt?: stri
     .filter((sample): sample is { symbol: string; value: number; timestamp_ms: number } => (
       Boolean(sample.symbol) && typeof sample.value === "number" && Number.isFinite(sample.value)
     ));
+}
+
+export function latestWhaleByBaseSymbol(signals: WhaleSignal[]) {
+  const map = new Map<string, WhaleSignal>();
+  for (const signal of signals) {
+    const symbol = baseSymbol(signal.symbol);
+    if (!map.has(symbol)) {
+      map.set(symbol, signal);
+    }
+  }
+  return map;
+}
+
+function baseSymbol(symbol: string) {
+  return symbol.toUpperCase().replace(/USDT$/, "").replace(/USD_PERP$/, "");
 }
