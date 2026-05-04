@@ -40,11 +40,18 @@ pub struct DashboardState {
     pub last_error: Option<String>,
     pub dry_run: bool,
     pub allow_live_buys: bool,
+    pub allow_live_sells: bool,
     pub live_max_order_usd: f64,
     pub snipe_max_position_usd: f64,
     pub wallet_configured: bool,
     pub funder_address: String,
     pub signature_type: Option<u8>,
+    pub enable_llm_market_reports: bool,
+    pub llm_api_base: String,
+    pub llm_api_key_configured: bool,
+    pub llm_model: String,
+    pub llm_report_dir: String,
+    pub llm_code_patch_mode: String,
     pub wallet: WalletSnapshot,
     pub activities: VecDeque<ActivityLog>,
 }
@@ -236,11 +243,18 @@ async fn update_settings(
             let mut dashboard = context.shared.write().await;
             dashboard.dry_run = settings.dry_run;
             dashboard.allow_live_buys = settings.allow_live_buys;
+            dashboard.allow_live_sells = settings.allow_live_sells;
             dashboard.live_max_order_usd = settings.live_max_order_usd;
             dashboard.snipe_max_position_usd = settings.snipe_max_position_usd;
             dashboard.wallet_configured = settings.polymarket_private_key.is_some();
             dashboard.funder_address = settings.polymarket_funder_address.clone();
             dashboard.signature_type = settings.polymarket_signature_type;
+            dashboard.enable_llm_market_reports = settings.enable_llm_market_reports;
+            dashboard.llm_api_base = settings.llm_api_base.clone();
+            dashboard.llm_api_key_configured = settings.llm_api_key.is_some();
+            dashboard.llm_model = settings.llm_model.clone();
+            dashboard.llm_report_dir = settings.llm_report_dir.display().to_string();
+            dashboard.llm_code_patch_mode = settings.llm_code_patch_mode.clone();
             dashboard.wallet = wallet;
             Json(serde_json::json!({ "ok": true }))
         }

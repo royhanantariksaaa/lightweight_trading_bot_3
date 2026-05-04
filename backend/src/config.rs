@@ -150,6 +150,11 @@ impl Settings {
         next.snipe_max_position_usd = update.snipe_max_position_usd;
         next.polymarket_signature_type = update.signature_type;
         next.polymarket_funder_address = update.funder_address.trim().to_string();
+        next.enable_llm_market_reports = update.enable_llm_market_reports;
+        next.llm_api_base = update.llm_api_base.trim().to_string();
+        next.llm_model = update.llm_model.trim().to_string();
+        next.llm_report_dir = PathBuf::from(update.llm_report_dir.trim());
+        next.llm_code_patch_mode = update.llm_code_patch_mode.trim().to_string();
 
         let mut env_updates = vec![
             ("DRY_RUN", update.dry_run.to_string()),
@@ -158,6 +163,17 @@ impl Settings {
             ("LIVE_MAX_ORDER_USD", update.live_max_order_usd.to_string()),
             ("SNIPE_MAX_POSITION_USD", update.snipe_max_position_usd.to_string()),
             ("FUNDER_ADDRESS", update.funder_address.trim().to_string()),
+            (
+                "ENABLE_LLM_MARKET_REPORTS",
+                update.enable_llm_market_reports.to_string(),
+            ),
+            ("LLM_API_BASE", update.llm_api_base.trim().to_string()),
+            ("LLM_MODEL", update.llm_model.trim().to_string()),
+            ("LLM_REPORT_DIR", update.llm_report_dir.trim().to_string()),
+            (
+                "LLM_CODE_PATCH_MODE",
+                update.llm_code_patch_mode.trim().to_string(),
+            ),
         ];
 
         if let Some(st) = update.signature_type {
@@ -169,19 +185,24 @@ impl Settings {
         if let Some(private_key) = update.private_key {
             let trimmed = private_key.trim();
             next.polymarket_private_key = if trimmed.is_empty() {
-                env_updates.push(("POLYMARKET_PRIVATE_KEY", "".to_string()));
-                None
+                next.polymarket_private_key
             } else {
                 env_updates.push(("POLYMARKET_PRIVATE_KEY", trimmed.to_string()));
                 Some(trimmed.to_string())
             };
         }
 
-        next.validate_runtime_wallet()?;
-        
-        if let Err(e) = persist_env(&env_updates) {
-            warn!("Failed to persist settings to .env: {}", e);
+        if let Some(api_key) = update.llm_api_key {
+            let trimmed = api_key.trim();
+            if !trimmed.is_empty() {
+                env_updates.push(("LLM_API_KEY", trimmed.to_string()));
+                next.llm_api_key = Some(trimmed.to_string());
+            }
         }
+
+        next.validate_runtime_wallet()?;
+        next.validate_runtime_llm()?;
+        persist_env(&env_updates)?;
 
         *self = next;
         Ok(())
@@ -195,6 +216,25 @@ impl Settings {
             && self.polymarket_signature_type.is_none()
         {
             bail!("funder address requires signature type");
+        }
+        Ok(())
+    }
+
+    pub fn validate_runtime_llm(&self) -> Result<()> {
+        if !self.enable_llm_market_reports {
+            return Ok(());
+        }
+        if self.llm_api_base.trim().is_empty() {
+            bail!("LLM reporting requires an API base URL");
+        }
+        if self.llm_model.trim().is_empty() {
+            bail!("LLM reporting requires a model");
+        }
+        if self.llm_api_key.is_none() {
+            bail!("LLM reporting requires an API key");
+        }
+        if self.llm_report_dir.as_os_str().is_empty() {
+            bail!("LLM reporting requires a report directory");
         }
         Ok(())
     }
@@ -247,6 +287,12 @@ pub struct RuntimeSettingsUpdate {
     pub funder_address: String,
     pub signature_type: Option<u8>,
     pub private_key: Option<String>,
+    pub enable_llm_market_reports: bool,
+    pub llm_api_base: String,
+    pub llm_api_key: Option<String>,
+    pub llm_model: String,
+    pub llm_report_dir: String,
+    pub llm_code_patch_mode: String,
 }
 
 fn parse_symbols(raw: &str) -> Vec<String> {
@@ -316,24 +362,14 @@ where
 }
 
 fn persist_env(updates: &[(&str, String)]) -> Result<()> {
-    // Find the .env file path using dotenvy if possible, or fallback to current directory
     let env_path = std::env::current_dir()?.join(".env");
     let content = std::fs::read_to_string(&env_path).unwrap_or_default();
     let mut lines: Vec<String> = content.lines().map(ToString::to_string).collect();
 
     for (key, value) in updates {
         let prefix = format!("{key}=");
-        let mut found = false;
-        for line in lines.iter_mut() {
-            if line.starts_with(&prefix) {
-                *line = format!("{key}={value}");
-                found = true;
-                break;
-            }
-        }
-        if !found {
-            lines.push(format!("{key}={value}"));
-        }
+        lines.retain(|line| !line.starts_with(&prefix));
+        lines.push(format!("{key}={value}"));
     }
 
     // Ensure the file ends with a newline

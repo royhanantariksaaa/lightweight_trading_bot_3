@@ -40,11 +40,18 @@ async fn main() -> Result<()> {
     let dashboard_state: SharedDashboard = Arc::new(RwLock::new(DashboardState {
         dry_run: settings.dry_run,
         allow_live_buys: settings.allow_live_buys,
+        allow_live_sells: settings.allow_live_sells,
         live_max_order_usd: settings.live_max_order_usd,
         snipe_max_position_usd: settings.snipe_max_position_usd,
         wallet_configured: settings.polymarket_private_key.is_some(),
         funder_address: settings.polymarket_funder_address.clone(),
         signature_type: settings.polymarket_signature_type,
+        enable_llm_market_reports: settings.enable_llm_market_reports,
+        llm_api_base: settings.llm_api_base.clone(),
+        llm_api_key_configured: settings.llm_api_key.is_some(),
+        llm_model: settings.llm_model.clone(),
+        llm_report_dir: settings.llm_report_dir.display().to_string(),
+        llm_code_patch_mode: settings.llm_code_patch_mode.clone(),
         ..DashboardState::default()
     }));
 

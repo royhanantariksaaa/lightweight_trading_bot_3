@@ -20,6 +20,12 @@ export const emptyStatus: DashboardStatus = {
   wallet_configured: false,
   funder_address: "",
   signature_type: null,
+  enable_llm_market_reports: false,
+  llm_api_base: "https://api.openai.com/v1",
+  llm_api_key_configured: false,
+  llm_model: "",
+  llm_report_dir: "/var/lib/trading-bot/llm-reports",
+  llm_code_patch_mode: "proposal_only",
   wallet: {
     positions_count: 0,
     open_orders: [],

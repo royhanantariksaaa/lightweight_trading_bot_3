@@ -48,6 +48,12 @@ export type DashboardStatus = {
   wallet_configured: boolean;
   funder_address: string;
   signature_type?: number | null;
+  enable_llm_market_reports: boolean;
+  llm_api_base: string;
+  llm_api_key_configured: boolean;
+  llm_model: string;
+  llm_report_dir: string;
+  llm_code_patch_mode: string;
   wallet: WalletSnapshot;
 };
 
@@ -104,6 +110,12 @@ export type RuntimeSettingsUpdate = {
   funder_address: string;
   signature_type?: number | null;
   private_key?: string | null;
+  enable_llm_market_reports: boolean;
+  llm_api_base: string;
+  llm_api_key?: string | null;
+  llm_model: string;
+  llm_report_dir: string;
+  llm_code_patch_mode: string;
 };
 
 export type WhaleWallInfo = {
