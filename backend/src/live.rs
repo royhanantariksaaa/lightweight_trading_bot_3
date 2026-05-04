@@ -172,8 +172,9 @@ pub async fn post_live_order(
     let token_id = U256::from_str(&request.token_id)
         .with_context(|| format!("invalid CLOB token_id={}", request.token_id))?;
     let price = decimal_from_f64(request.price, "price", 2)?;
-    let size = decimal_from_f64(request.size, "size", 2)?;
     let order_type = sdk_order_type(&request.order_type)?;
+
+    let size = decimal_from_f64(request.size, "size", 2)?;
 
     let response = client
         .limit_order()
@@ -518,21 +519,57 @@ fn guarded_request(
     let mut size = size;
     let mut amount_usd = price * size;
 
-    let is_fak = settings.live_order_type.trim().eq_ignore_ascii_case("FAK");
+    let is_fak = settings.live_order_type.trim().eq_ignore_ascii_case("FAK") ||
+        settings.live_order_type.trim().eq_ignore_ascii_case("FOK");
+
+    // For FAK/FOK buys, check LIVE_MAX against the original intended amount BEFORE
+    // decimal compliance adjustment. The compliance bump is a mandatory API requirement
+    // and should not block orders that were within the user's intended limit.
+    if is_fak && matches!(side, LiveSide::Buy) && amount_usd > settings.live_max_order_usd {
+        bail!(
+            "blocked live order: ${:.2} exceeds LIVE_MAX_ORDER_USD={:.2}",
+            amount_usd,
+            settings.live_max_order_usd
+        );
+    }
     if is_fak && matches!(side, LiveSide::Buy) {
-        // SDK enforces 2-decimal lot size on order size.
-        // Keep size at 2 decimals and ensure post-rounded notional reaches $1.00.
-        let mut rounded_size = (size * 100.0).floor() / 100.0;
-        if rounded_size <= 0.0 {
-            bail!("blocked live order: invalid rounded size for FAK buy");
+        // Polymarket CLOB API rules for marketable (FAK/FOK) BUY orders:
+        //   - maker_amount (USDC = size * price) must have at most 2 decimal places
+        //   - maker_amount must be >= $1.00 minimum
+        // Using integer cent arithmetic to avoid float rounding issues.
+        //
+        // Phase 1: walk DOWN from raw size to find largest size where (size*price) % $0.01 == 0
+        // Phase 2: if Phase 1 produced maker_usdc < $1, walk UP to next clean size >= $1
+        let price_cents = (price * 100.0).round() as i64;
+        if price_cents <= 0 {
+            bail!("blocked live order: price rounds to zero ({price})");
         }
-        amount_usd = ((price * rounded_size) * 100.0).round() / 100.0;
-        if amount_usd < 1.0 {
-            let min_size_for_one_usd = (1.0 / price * 100.0).ceil() / 100.0;
-            rounded_size = rounded_size.max(min_size_for_one_usd);
-            amount_usd = ((price * rounded_size) * 100.0).round() / 100.0;
+        let mut size_cents = (size * 100.0).floor() as i64;
+        if size_cents <= 0 {
+            bail!("blocked live order: size rounds to zero ({size})");
         }
-        size = rounded_size;
+
+        // Phase 1: walk down until product is 2-decimal-clean
+        while (size_cents * price_cents) % 100 != 0 {
+            size_cents -= 1;
+            if size_cents <= 0 {
+                bail!("blocked live order: no 2-decimal-clean product possible for price={price}");
+            }
+        }
+
+        // Phase 2: if maker_usdc < $1 minimum, bump up to next valid clean size
+        // $1.00 in micro-cents = 10_000; size_cents * price_cents gives micro-cents
+        if size_cents * price_cents < 10_000 {
+            // Smallest size_cents that brings maker_usdc to >= $1.00
+            size_cents = (10_000i64 + price_cents - 1) / price_cents;
+            // Walk up until the product is also 2-decimal-clean
+            while (size_cents * price_cents) % 100 != 0 {
+                size_cents += 1;
+            }
+        }
+
+        size = size_cents as f64 / 100.0;
+        amount_usd = (size_cents * price_cents) as f64 / 10_000.0;
     }
     // Keep the legacy 5-share bump for resting order types; FAK is allowed to submit smaller size.
     if !is_fak && size < 5.0 {
@@ -551,7 +588,8 @@ fn guarded_request(
         }
     }
 
-    if amount_usd > settings.live_max_order_usd {
+    // For non-FAK orders, check the final amount (already checked pre-compliance for FAK above).
+    if !is_fak && amount_usd > settings.live_max_order_usd {
         bail!(
             "blocked live order: ${:.2} exceeds LIVE_MAX_ORDER_USD={:.2}",
             amount_usd,

@@ -16,6 +16,7 @@ export function SettingsModal(props: {
     props.current.signature_type === null || props.current.signature_type === undefined ? "" : String(props.current.signature_type)
   );
   const [draftMaxOrder, setDraftMaxOrder] = createSignal(props.current.live_max_order_usd || 1);
+  const [draftLiveOrderType, setDraftLiveOrderType] = createSignal(props.current.live_order_type || "FAK");
   const [draftSnipeMax, setDraftSnipeMax] = createSignal(props.current.snipe_max_position_usd || 5);
   const [draftLlmEnabled, setDraftLlmEnabled] = createSignal(Boolean(props.current.enable_llm_market_reports));
   const [draftLlmApiBase, setDraftLlmApiBase] = createSignal(props.current.llm_api_base || "https://api.openai.com/v1");
@@ -44,6 +45,7 @@ export function SettingsModal(props: {
         allow_live_buys: draftLive(),
         allow_live_sells: draftLiveSells(),
         live_max_order_usd: draftMaxOrder(),
+        live_order_type: draftLiveOrderType(),
         snipe_max_position_usd: draftSnipeMax(),
         funder_address: draftFunder(),
         signature_type: signatureType,
@@ -128,6 +130,15 @@ export function SettingsModal(props: {
             <input class="w-full h-[34px] text-[#f4f7fb] border border-soft-line rounded-md bg-[#19222a] px-2.5 font-inherit text-[0.76rem] outline-none focus:border-blue" type="number" min="1" step="0.5" value={draftSnipeMax()} onInput={(event) => setDraftSnipeMax(Number(event.currentTarget.value || 0))} />
           </label>
         </div>
+        <label class="grid gap-1.5">
+          <span class="text-[#91a0af] text-[0.7rem] font-extrabold">Live order type</span>
+          <select class="w-full h-[34px] text-[#f4f7fb] border border-soft-line rounded-md bg-[#19222a] px-2.5 font-inherit text-[0.76rem] outline-none focus:border-blue" value={draftLiveOrderType()} onInput={(event) => setDraftLiveOrderType(event.currentTarget.value)}>
+            <option value="FAK">FAK (fill-and-kill)</option>
+            <option value="FOK">FOK (fill-or-kill)</option>
+            <option value="GTC">GTC (resting)</option>
+            <option value="GTD">GTD (good-till-date)</option>
+          </select>
+        </label>
         <div class="border-t border-soft-line pt-2 grid gap-3">
           <label class="grid grid-cols-[1fr_auto] items-center justify-between gap-3">
             <span>

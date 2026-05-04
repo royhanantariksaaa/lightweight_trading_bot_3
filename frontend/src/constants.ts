@@ -16,6 +16,7 @@ export const emptyStatus: DashboardStatus = {
   allow_live_buys: false,
   allow_live_sells: false,
   live_max_order_usd: 5,
+  live_order_type: "FAK",
   snipe_max_position_usd: 5,
   wallet_configured: false,
   funder_address: "",

@@ -43,6 +43,7 @@ pub struct DashboardState {
     pub allow_live_buys: bool,
     pub allow_live_sells: bool,
     pub live_max_order_usd: f64,
+    pub live_order_type: String,
     pub snipe_max_position_usd: f64,
     pub wallet_configured: bool,
     pub funder_address: String,
@@ -368,6 +369,7 @@ async fn update_settings(
             dashboard.allow_live_buys = settings.allow_live_buys;
             dashboard.allow_live_sells = settings.allow_live_sells;
             dashboard.live_max_order_usd = settings.live_max_order_usd;
+            dashboard.live_order_type = settings.live_order_type.clone();
             dashboard.snipe_max_position_usd = settings.snipe_max_position_usd;
             dashboard.wallet_configured = settings.polymarket_private_key.is_some();
             dashboard.funder_address = settings.polymarket_funder_address.clone();

@@ -147,6 +147,7 @@ impl Settings {
         next.allow_live_buys = update.allow_live_buys;
         next.allow_live_sells = update.allow_live_sells;
         next.live_max_order_usd = update.live_max_order_usd;
+        next.live_order_type = update.live_order_type.trim().to_ascii_uppercase();
         next.snipe_max_position_usd = update.snipe_max_position_usd;
         next.polymarket_signature_type = update.signature_type;
         next.polymarket_funder_address = update.funder_address.trim().to_string();
@@ -161,6 +162,7 @@ impl Settings {
             ("ALLOW_LIVE_BUYS", update.allow_live_buys.to_string()),
             ("ALLOW_LIVE_SELLS", update.allow_live_sells.to_string()),
             ("LIVE_MAX_ORDER_USD", update.live_max_order_usd.to_string()),
+            ("LIVE_ORDER_TYPE", next.live_order_type.clone()),
             ("SNIPE_MAX_POSITION_USD", update.snipe_max_position_usd.to_string()),
             ("FUNDER_ADDRESS", update.funder_address.trim().to_string()),
             (
@@ -202,6 +204,7 @@ impl Settings {
 
         next.validate_runtime_wallet()?;
         next.validate_runtime_llm()?;
+        next.validate_runtime_live_order_type()?;
         persist_env(&env_updates)?;
 
         *self = next;
@@ -237,6 +240,13 @@ impl Settings {
             bail!("LLM reporting requires a report directory");
         }
         Ok(())
+    }
+
+    pub fn validate_runtime_live_order_type(&self) -> Result<()> {
+        match self.live_order_type.trim().to_ascii_uppercase().as_str() {
+            "GTC" | "FOK" | "GTD" | "FAK" => Ok(()),
+            other => bail!("unsupported LIVE_ORDER_TYPE={other}; expected GTC, FOK, GTD, or FAK"),
+        }
     }
 
     pub fn log_safety_summary(&self) {
@@ -283,6 +293,7 @@ pub struct RuntimeSettingsUpdate {
     pub allow_live_buys: bool,
     pub allow_live_sells: bool,
     pub live_max_order_usd: f64,
+    pub live_order_type: String,
     pub snipe_max_position_usd: f64,
     pub funder_address: String,
     pub signature_type: Option<u8>,

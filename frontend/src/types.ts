@@ -44,6 +44,7 @@ export type DashboardStatus = {
   allow_live_buys: boolean;
   allow_live_sells: boolean;
   live_max_order_usd: number;
+  live_order_type: string;
   snipe_max_position_usd: number;
   wallet_configured: boolean;
   funder_address: string;
@@ -106,6 +107,7 @@ export type RuntimeSettingsUpdate = {
   allow_live_buys: boolean;
   allow_live_sells: boolean;
   live_max_order_usd: number;
+  live_order_type: string;
   snipe_max_position_usd: number;
   funder_address: string;
   signature_type?: number | null;

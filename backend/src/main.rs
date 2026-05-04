@@ -45,6 +45,7 @@ async fn main() -> Result<()> {
         allow_live_buys: settings.allow_live_buys,
         allow_live_sells: settings.allow_live_sells,
         live_max_order_usd: settings.live_max_order_usd,
+        live_order_type: settings.live_order_type.clone(),
         snipe_max_position_usd: settings.snipe_max_position_usd,
         wallet_configured: settings.polymarket_private_key.is_some(),
         funder_address: settings.polymarket_funder_address.clone(),
@@ -361,6 +362,7 @@ async fn run_bot(
                     dashboard.dry_run = settings.dry_run;
                     dashboard.allow_live_buys = settings.allow_live_buys;
                     dashboard.live_max_order_usd = settings.live_max_order_usd;
+                    dashboard.live_order_type = settings.live_order_type.clone();
                     dashboard.snipe_max_position_usd = settings.snipe_max_position_usd;
                     dashboard.wallet_configured = settings.polymarket_private_key.is_some();
                     dashboard.funder_address = settings.polymarket_funder_address.clone();
