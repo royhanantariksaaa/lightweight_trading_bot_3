@@ -59,7 +59,7 @@ impl StrategyContext {
         let inventory_shares = state
             .bot_positions
             .get(&format!("{}::{}", market_slug, outcome))
-            .map(|p| p.shares)
+            .map(|p| p.total_shares)
             .unwrap_or(0.0);
 
         Self {
