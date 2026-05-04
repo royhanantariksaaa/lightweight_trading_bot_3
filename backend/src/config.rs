@@ -60,6 +60,13 @@ pub struct Settings {
     pub polymarket_signature_type: Option<u8>,
     pub polymarket_funder_address: String,
     pub polymarket_private_key: Option<String>,
+
+    pub enable_llm_market_reports: bool,
+    pub llm_api_base: String,
+    pub llm_api_key: Option<String>,
+    pub llm_model: String,
+    pub llm_report_dir: PathBuf,
+    pub llm_code_patch_mode: String,
 }
 
 impl Settings {
@@ -119,6 +126,18 @@ impl Settings {
             polymarket_signature_type: env_optional_parse("SIGNATURE_TYPE")?,
             polymarket_funder_address: env_string("FUNDER_ADDRESS", ""),
             polymarket_private_key: env_optional_string("POLYMARKET_PRIVATE_KEY"),
+
+            enable_llm_market_reports: env_bool("ENABLE_LLM_MARKET_REPORTS", false),
+            llm_api_base: env_string("LLM_API_BASE", "https://api.openai.com/v1"),
+            llm_api_key: env_optional_string("LLM_API_KEY")
+                .or_else(|| env_optional_string("OPENAI_API_KEY"))
+                .or_else(|| env_optional_string("DEEPSEEK_API_KEY")),
+            llm_model: env_string("LLM_MODEL", ""),
+            llm_report_dir: PathBuf::from(env_string(
+                "LLM_REPORT_DIR",
+                "/var/lib/trading-bot/llm-reports",
+            )),
+            llm_code_patch_mode: env_string("LLM_CODE_PATCH_MODE", "proposal_only"),
         })
     }
 
@@ -201,6 +220,10 @@ impl Settings {
             snipe_max_position_usd = self.snipe_max_position_usd,
             enable_whale_detector = self.enable_whale_detector,
             whale_symbols = ?self.effective_whale_symbols(),
+            enable_llm_market_reports = self.enable_llm_market_reports,
+            llm_model_configured = !self.llm_model.trim().is_empty(),
+            llm_api_key_configured = self.llm_api_key.is_some(),
+            llm_code_patch_mode = %self.llm_code_patch_mode,
             "safety summary"
         );
     }

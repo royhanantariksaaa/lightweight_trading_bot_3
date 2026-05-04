@@ -1,7 +1,7 @@
 use anyhow::Result;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use uuid::Uuid;
 
@@ -11,6 +11,8 @@ pub struct BotState {
     pub bot_positions: HashMap<String, BotPosition>,
     pub recent_exits: HashMap<String, i64>,
     pub signal_counts: HashMap<String, SignalCounter>,
+    #[serde(default)]
+    pub reported_closed_markets: HashSet<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -216,6 +218,14 @@ impl BotState {
         };
         counter.last_seen_ms = now_ms();
         counter.clone()
+    }
+
+    pub fn closed_market_reported(&self, slug: &str) -> bool {
+        self.reported_closed_markets.contains(slug)
+    }
+
+    pub fn mark_closed_market_reported(&mut self, slug: String) {
+        self.reported_closed_markets.insert(slug);
     }
 }
 

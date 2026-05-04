@@ -11,7 +11,7 @@ use std::str::FromStr;
 
 use crate::config::Settings;
 
-#[derive(Clone, Debug, serde::Serialize)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct MarketSnapshot {
     pub slug: String,
     pub question: String,
@@ -26,13 +26,31 @@ pub struct MarketSnapshot {
     pub outcomes: Vec<OutcomeSnapshot>,
 }
 
-#[derive(Clone, Debug, serde::Serialize)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct OutcomeSnapshot {
     pub name: String,
     pub token_id: Option<String>,
     pub price: f64,
     pub best_bid: Option<f64>,
     pub best_ask: Option<f64>,
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct ClosedMarketSnapshot {
+    pub slug: String,
+    pub question: String,
+    pub closed: Option<bool>,
+    pub active: Option<bool>,
+    pub end_time: Option<DateTime<Utc>>,
+    pub closed_time: Option<String>,
+    pub uma_resolution_status: Option<String>,
+    pub resolved_by: Option<String>,
+    pub outcomes: Vec<OutcomeSnapshot>,
+    pub inferred_winner: Option<String>,
+    pub volume: f64,
+    pub liquidity: f64,
+    pub price_to_beat: Option<f64>,
+    pub final_reference_price: Option<f64>,
 }
 
 #[derive(Clone)]
@@ -85,6 +103,22 @@ impl PolymarketClient {
 
         markets.sort_by_key(|market| market.seconds_to_expiry);
         self.hydrate_live_market_data(markets).await
+    }
+
+    pub async fn fetch_closed_market_snapshot(
+        &self,
+        observed: &MarketSnapshot,
+    ) -> Result<ClosedMarketSnapshot> {
+        let market = self
+            .gamma
+            .market_by_slug(
+                &MarketBySlugRequest::builder()
+                    .slug(observed.slug.clone())
+                    .build(),
+            )
+            .await
+            .with_context(|| format!("failed to fetch closed market {}", observed.slug))?;
+        self.closed_market_snapshot_from_gamma(market, observed).await
     }
 
     async fn fetch_active_5m_markets_by_slug(
@@ -283,6 +317,69 @@ impl PolymarketClient {
         Ok(prefix
             .rfind("\"openPrice\":")
             .and_then(|idx| extract_number_after(&prefix[idx..], "\"openPrice\":")))
+    }
+
+    async fn closed_market_snapshot_from_gamma(
+        &self,
+        market: GammaMarket,
+        observed: &MarketSnapshot,
+    ) -> Result<ClosedMarketSnapshot> {
+        let slug = market.slug.unwrap_or_else(|| observed.slug.clone());
+        let question = market.question.unwrap_or_else(|| observed.question.clone());
+        let outcome_names = market
+            .outcomes
+            .unwrap_or_else(|| observed.outcomes.iter().map(|outcome| outcome.name.clone()).collect());
+        let prices = market.outcome_prices.unwrap_or_default();
+        let token_ids = market.clob_token_ids.unwrap_or_default();
+        let outcomes = outcome_names
+            .into_iter()
+            .enumerate()
+            .map(|(idx, name)| OutcomeSnapshot {
+                name,
+                token_id: token_ids
+                    .get(idx)
+                    .map(ToString::to_string)
+                    .or_else(|| observed.outcomes.get(idx).and_then(|outcome| outcome.token_id.clone())),
+                price: prices
+                    .get(idx)
+                    .map(decimal_to_f64)
+                    .or_else(|| observed.outcomes.get(idx).map(|outcome| outcome.price))
+                    .unwrap_or(0.0),
+                best_bid: observed.outcomes.get(idx).and_then(|outcome| outcome.best_bid),
+                best_ask: observed.outcomes.get(idx).and_then(|outcome| outcome.best_ask),
+            })
+            .collect::<Vec<_>>();
+        let inferred_winner = outcomes
+            .iter()
+            .filter(|outcome| outcome.price >= 0.95)
+            .max_by(|left, right| left.price.total_cmp(&right.price))
+            .map(|outcome| outcome.name.clone());
+        let symbol = symbol_from_slug(&slug);
+
+        Ok(ClosedMarketSnapshot {
+            slug,
+            question,
+            closed: market.closed,
+            active: market.active,
+            end_time: market.end_date.or(observed.end_time),
+            closed_time: market.closed_time,
+            uma_resolution_status: market.uma_resolution_status,
+            resolved_by: market.resolved_by,
+            outcomes,
+            inferred_winner,
+            volume: market
+                .volume_num
+                .or(market.volume)
+                .map(|value| decimal_to_f64(&value))
+                .unwrap_or(observed.volume),
+            liquidity: market
+                .liquidity_num
+                .or(market.liquidity)
+                .map(|value| decimal_to_f64(&value))
+                .unwrap_or(observed.liquidity),
+            price_to_beat: observed.price_to_beat,
+            final_reference_price: self.fetch_chainlink_live_price(&symbol).await.ok().flatten(),
+        })
     }
 }
 

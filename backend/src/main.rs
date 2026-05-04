@@ -1,5 +1,6 @@
 mod config;
 mod dashboard;
+mod llm;
 mod live;
 mod polymarket;
 mod snipe;
@@ -8,7 +9,8 @@ mod strategy;
 mod whale;
 
 use anyhow::Result;
-use chrono::Utc;
+use chrono::{Duration as ChronoDuration, Utc};
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio::time::{Duration, sleep};
@@ -16,6 +18,7 @@ use tracing::{error, info, warn};
 
 use crate::config::Settings;
 use crate::dashboard::{DashboardState, SharedDashboard, serve_dashboard};
+use crate::llm::LlmReporter;
 use crate::live::{buy_request_from_snipe, fetch_wallet_snapshot, post_live_order, redeem_winnings, sell_request_from_position};
 use crate::polymarket::PolymarketClient;
 use crate::snipe::{WhaleContext, find_last_minute_5m_snipes};
@@ -105,6 +108,9 @@ async fn run_bot(
     let initial_settings = runtime_settings.read().await.clone();
     let mut state = BotState::load_or_default(&initial_settings.state_path).await?;
     let polymarket = PolymarketClient::new(&initial_settings)?;
+    let llm_reporter = LlmReporter::new();
+    let mut last_seen_markets: HashMap<String, crate::polymarket::MarketSnapshot> =
+        HashMap::new();
     let mut last_live_order_ms = 0_i64;
     let mut last_redeem_ms = 0_i64;
 
@@ -113,6 +119,50 @@ async fn run_bot(
         if settings.enable_last_minute_5m_snipe {
             match polymarket.fetch_active_5m_markets(&settings).await {
                 Ok(markets) => {
+                    let active_slugs = markets
+                        .iter()
+                        .map(|market| market.slug.clone())
+                        .collect::<HashSet<_>>();
+                    let closed_observed = last_seen_markets
+                        .values()
+                        .filter(|market| {
+                            !active_slugs.contains(&market.slug)
+                                && market
+                                    .end_time
+                                    .map(|end_time| end_time <= Utc::now() + ChronoDuration::seconds(5))
+                                    .unwrap_or(false)
+                                && !state.closed_market_reported(&market.slug)
+                        })
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    for observed in closed_observed {
+                        let whale_signals = dashboard_state.read().await.whale_signals.clone();
+                        match polymarket.fetch_closed_market_snapshot(&observed).await {
+                            Ok(final_market) => match llm_reporter
+                                .report_closed_market(
+                                    &settings,
+                                    observed.clone(),
+                                    final_market,
+                                    &state,
+                                    whale_signals,
+                                )
+                                .await
+                            {
+                                Ok(true) => {
+                                    info!(slug = %observed.slug, "closed market reported to LLM");
+                                    state.mark_closed_market_reported(observed.slug);
+                                }
+                                Ok(false) => {}
+                                Err(error) => {
+                                    warn!(%error, slug = %observed.slug, "closed market LLM report failed")
+                                }
+                            },
+                            Err(error) => {
+                                warn!(%error, slug = %observed.slug, "failed to fetch closed market snapshot")
+                            }
+                        }
+                    }
+
                     // Read whale signals from dashboard to inform directional bias
                     let whale_signals = dashboard_state.read().await.whale_signals.clone();
                     let whale_ctx = WhaleContext { signals: whale_signals };
@@ -191,7 +241,7 @@ async fn run_bot(
                     dashboard.last_scan_at = Some(Utc::now().to_rfc3339());
                     dashboard.scanned_markets = markets.len();
                     dashboard.candidates = signals;
-                    dashboard.watched_markets = markets;
+                    dashboard.watched_markets = markets.clone();
                     dashboard.last_error = None;
                     dashboard.dry_run = settings.dry_run;
                     dashboard.allow_live_buys = settings.allow_live_buys;
@@ -201,6 +251,10 @@ async fn run_bot(
                     dashboard.funder_address = settings.polymarket_funder_address.clone();
                     dashboard.signature_type = settings.polymarket_signature_type;
                     dashboard.wallet = wallet;
+                    last_seen_markets = markets
+                        .iter()
+                        .map(|market| (market.slug.clone(), market.clone()))
+                        .collect();
                 }
                 Err(error) => {
                     warn!(%error, "snipe scan failed");
