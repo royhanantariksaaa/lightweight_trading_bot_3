@@ -1,4 +1,4 @@
-import type { DashboardStatus, ManualOrderRequest, ManualOrderResponse, RuntimeSettingsUpdate } from "./types";
+import type { DashboardStatus, LlmReportDetailResponse, LlmReportListItem, ManualOrderRequest, ManualOrderResponse, RuntimeSettingsUpdate } from "./types";
 
 export async function fetchStatus(): Promise<DashboardStatus> {
   const response = await fetch("/api/status");
@@ -23,5 +23,17 @@ export async function saveSettings(settings: RuntimeSettingsUpdate): Promise<{ o
     body: JSON.stringify(settings),
   });
   if (!response.ok) throw new Error(`Settings request failed: ${response.status}`);
+  return response.json();
+}
+
+export async function fetchLlmReports(): Promise<LlmReportListItem[]> {
+  const response = await fetch("/api/llm-reports");
+  if (!response.ok) throw new Error(`LLM reports request failed: ${response.status}`);
+  return response.json();
+}
+
+export async function fetchLlmReport(id: string): Promise<LlmReportDetailResponse> {
+  const response = await fetch(`/api/llm-reports/${encodeURIComponent(id)}`);
+  if (!response.ok) throw new Error(`LLM report request failed: ${response.status}`);
   return response.json();
 }

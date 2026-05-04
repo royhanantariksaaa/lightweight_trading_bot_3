@@ -118,6 +118,29 @@ export type RuntimeSettingsUpdate = {
   llm_code_patch_mode: string;
 };
 
+export type LlmReportListItem = {
+  id: string;
+  generated_at?: string | null;
+  market_slug?: string | null;
+  question?: string | null;
+  has_response: boolean;
+  has_code_patch: boolean;
+};
+
+export type LlmReportDetail = {
+  id: string;
+  report: unknown;
+  llm_response?: unknown | null;
+  llm_response_raw?: string | null;
+  code_patch_unified_diff?: string | null;
+};
+
+export type LlmReportDetailResponse = {
+  ok: boolean;
+  error?: string;
+  report?: LlmReportDetail;
+};
+
 export type WhaleWallInfo = {
   price: number;
   notional_usd: number;

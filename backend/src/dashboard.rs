@@ -1,11 +1,11 @@
 use axum::{
     Json, Router,
-    extract::State,
+    extract::{Path, State},
     response::Html,
     routing::{get, post},
 };
 use serde::{Deserialize, Serialize};
-use std::{collections::VecDeque, net::SocketAddr, sync::Arc};
+use std::{collections::VecDeque, fs, net::SocketAddr, sync::Arc};
 use tokio::sync::RwLock;
 use tower_http::cors::CorsLayer;
 use uuid::Uuid;
@@ -123,6 +123,25 @@ pub struct ManualOrderResponse {
     pub order_id: Option<String>,
 }
 
+#[derive(Clone, Debug, Serialize)]
+pub struct LlmReportListItem {
+    pub id: String,
+    pub generated_at: Option<String>,
+    pub market_slug: Option<String>,
+    pub question: Option<String>,
+    pub has_response: bool,
+    pub has_code_patch: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct LlmReportDetail {
+    pub id: String,
+    pub report: serde_json::Value,
+    pub llm_response: Option<serde_json::Value>,
+    pub llm_response_raw: Option<String>,
+    pub code_patch_unified_diff: Option<String>,
+}
+
 #[derive(Clone)]
 struct DashboardContext {
     settings: Arc<RwLock<Settings>>,
@@ -144,6 +163,8 @@ pub async fn serve_dashboard(
         .route("/api/status", get(status))
         .route("/api/settings", post(update_settings))
         .route("/api/manual-order", post(manual_order))
+        .route("/api/llm-reports", get(list_llm_reports))
+        .route("/api/llm-reports/:id", get(get_llm_report))
         .layer(CorsLayer::permissive())
         .with_state(context);
 
@@ -161,6 +182,88 @@ pub async fn serve_dashboard(
 
 async fn status(State(context): State<DashboardContext>) -> Json<DashboardState> {
     Json(context.shared.read().await.clone())
+}
+
+async fn list_llm_reports(State(context): State<DashboardContext>) -> Json<Vec<LlmReportListItem>> {
+    let settings = context.settings.read().await.clone();
+    let mut items = fs::read_dir(&settings.llm_report_dir)
+        .ok()
+        .into_iter()
+        .flat_map(|entries| entries.filter_map(Result::ok))
+        .filter_map(|entry| {
+            let file_name = entry.file_name().to_string_lossy().to_string();
+            if !file_name.ends_with("-report.json") {
+                return None;
+            }
+            let id = file_name.trim_end_matches("-report.json").to_string();
+            let report = fs::read_to_string(entry.path())
+                .ok()
+                .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok());
+            let response_path = settings
+                .llm_report_dir
+                .join(format!("{id}-llm-response.json"));
+            let response_raw = fs::read_to_string(&response_path).ok();
+            Some(LlmReportListItem {
+                id,
+                generated_at: report
+                    .as_ref()
+                    .and_then(|value| value.get("generated_at"))
+                    .and_then(serde_json::Value::as_str)
+                    .map(ToString::to_string),
+                market_slug: report
+                    .as_ref()
+                    .and_then(|value| value.pointer("/observed_market/slug"))
+                    .and_then(serde_json::Value::as_str)
+                    .map(ToString::to_string),
+                question: report
+                    .as_ref()
+                    .and_then(|value| value.pointer("/observed_market/question"))
+                    .and_then(serde_json::Value::as_str)
+                    .map(ToString::to_string),
+                has_response: response_raw.is_some(),
+                has_code_patch: response_raw
+                    .as_deref()
+                    .and_then(extract_code_patch)
+                    .map(|patch| !patch.trim().is_empty())
+                    .unwrap_or(false),
+            })
+        })
+        .collect::<Vec<_>>();
+    items.sort_by(|a, b| b.id.cmp(&a.id));
+    Json(items)
+}
+
+async fn get_llm_report(
+    State(context): State<DashboardContext>,
+    Path(id): Path<String>,
+) -> Json<serde_json::Value> {
+    if !is_safe_report_id(&id) {
+        return Json(serde_json::json!({ "ok": false, "error": "invalid report id" }));
+    }
+    let settings = context.settings.read().await.clone();
+    let report_path = settings.llm_report_dir.join(format!("{id}-report.json"));
+    let report = match fs::read_to_string(&report_path)
+        .ok()
+        .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok())
+    {
+        Some(report) => report,
+        None => return Json(serde_json::json!({ "ok": false, "error": "report not found" })),
+    };
+    let response_raw = fs::read_to_string(settings.llm_report_dir.join(format!(
+        "{id}-llm-response.json"
+    )))
+    .ok();
+    let response = response_raw
+        .as_deref()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok());
+    let detail = LlmReportDetail {
+        id,
+        report,
+        llm_response: response,
+        llm_response_raw: response_raw.clone(),
+        code_patch_unified_diff: response_raw.as_deref().and_then(extract_code_patch),
+    };
+    Json(serde_json::json!({ "ok": true, "report": detail }))
 }
 
 async fn manual_order(
@@ -230,6 +333,24 @@ async fn manual_order(
             order_id: None,
         }),
     }
+}
+
+fn is_safe_report_id(id: &str) -> bool {
+    !id.is_empty()
+        && id
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_'))
+}
+
+fn extract_code_patch(raw: &str) -> Option<String> {
+    serde_json::from_str::<serde_json::Value>(raw)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("code_patch_unified_diff")
+                .and_then(serde_json::Value::as_str)
+                .map(ToString::to_string)
+        })
 }
 
 async fn update_settings(

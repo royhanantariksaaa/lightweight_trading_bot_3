@@ -6,6 +6,7 @@ import { ManualOrderSidebar } from "./components/organisms/ManualOrderSidebar";
 import { SettingsModal } from "./components/organisms/SettingsModal";
 import { SymbolPanel } from "./components/organisms/SymbolPanel";
 import { ActivityFeed } from "./components/organisms/ActivityFeed";
+import { LlmReviewPanel } from "./components/organisms/LlmReviewPanel";
 import { symbols } from "./constants";
 import { formatTime, formatUsd } from "./formatting";
 import { useClock } from "./hooks/useClock";
@@ -136,6 +137,7 @@ export function App() {
             onRefresh={refresh}
             compactUsd={compactUsd}
           />
+          <LlmReviewPanel />
           <ActivityFeed activities={current().activities} />
         </aside>
       </div>
