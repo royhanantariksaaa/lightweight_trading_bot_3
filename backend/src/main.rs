@@ -18,7 +18,7 @@ use tracing::{error, info, warn};
 
 use crate::config::Settings;
 use crate::dashboard::{DashboardState, SharedDashboard, serve_dashboard};
-use crate::llm::LlmReporter;
+use crate::llm::{LlmReporter, TradeExecutionReport};
 use crate::live::{
     buy_request_from_snipe, cancel_live_order, fetch_wallet_snapshot, post_live_order,
     hide_stale_display_orders, redeem_winnings, sell_request_from_position,
@@ -267,14 +267,80 @@ async fn run_bot(
                                             last_live_order_ms = now_ms();
                                             info!(?request, raw = ?response.raw, "placed live Polymarket CLOB V2 buy order");
                                             dashboard_state.write().await.push_activity("success", "Order Accepted", Some(&request.market_slug));
+                                            if let Err(error) = llm_reporter
+                                                .report_trade_execution(
+                                                    &settings,
+                                                    TradeExecutionReport {
+                                                        generated_at: Utc::now().to_rfc3339(),
+                                                        event_type: "live_buy_order".to_string(),
+                                                        market_slug: request.market_slug.clone(),
+                                                        outcome: request.outcome.clone(),
+                                                        side: "BUY".to_string(),
+                                                        amount_usd: Some(request.amount_usd),
+                                                        price: Some(request.price),
+                                                        shares: Some(request.size),
+                                                        success: true,
+                                                        reason: "order accepted".to_string(),
+                                                        exchange_response: Some(response.raw.clone()),
+                                                        error: None,
+                                                    },
+                                                )
+                                                .await
+                                            {
+                                                warn!(%error, "trade execution LLM report failed");
+                                            }
                                         }
                                         Ok(response) => {
                                             warn!(?request, raw = ?response.raw, "Polymarket CLOB V2 order was not accepted");
                                             dashboard_state.write().await.push_activity("error", "Order Rejected", Some(&format!("{:?}", response.raw)));
+                                            if let Err(error) = llm_reporter
+                                                .report_trade_execution(
+                                                    &settings,
+                                                    TradeExecutionReport {
+                                                        generated_at: Utc::now().to_rfc3339(),
+                                                        event_type: "live_buy_order".to_string(),
+                                                        market_slug: request.market_slug.clone(),
+                                                        outcome: request.outcome.clone(),
+                                                        side: "BUY".to_string(),
+                                                        amount_usd: Some(request.amount_usd),
+                                                        price: Some(request.price),
+                                                        shares: Some(request.size),
+                                                        success: false,
+                                                        reason: "order rejected by exchange".to_string(),
+                                                        exchange_response: Some(response.raw.clone()),
+                                                        error: None,
+                                                    },
+                                                )
+                                                .await
+                                            {
+                                                warn!(%error, "trade execution LLM report failed");
+                                            }
                                         }
                                         Err(error) => {
                                             error!(?error, "ERROR: failed to place live Polymarket CLOB V2 order");
                                             dashboard_state.write().await.push_activity("error", "Trade Error", Some(&error.to_string()));
+                                            if let Err(report_error) = llm_reporter
+                                                .report_trade_execution(
+                                                    &settings,
+                                                    TradeExecutionReport {
+                                                        generated_at: Utc::now().to_rfc3339(),
+                                                        event_type: "live_buy_order".to_string(),
+                                                        market_slug: request.market_slug.clone(),
+                                                        outcome: request.outcome.clone(),
+                                                        side: "BUY".to_string(),
+                                                        amount_usd: Some(request.amount_usd),
+                                                        price: Some(request.price),
+                                                        shares: Some(request.size),
+                                                        success: false,
+                                                        reason: "order submission failed".to_string(),
+                                                        exchange_response: None,
+                                                        error: Some(error.to_string()),
+                                                    },
+                                                )
+                                                .await
+                                            {
+                                                warn!(%report_error, "trade execution LLM report failed");
+                                            }
                                         }
                                     }
                                 }
@@ -369,11 +435,79 @@ async fn run_bot(
                                 info!(?request, %reason, "POSITION CLOSED: Early exit executed");
                                 dashboard_state.write().await.push_activity("warn", &format!("Exit: {}", reason), Some(&format!("Exited {} {}", position.outcome, position.market_slug)));
                                 state.record_exit(&position.market_slug, &position.outcome);
+                                if let Err(error) = llm_reporter
+                                    .report_trade_execution(
+                                        &settings,
+                                        TradeExecutionReport {
+                                            generated_at: Utc::now().to_rfc3339(),
+                                            event_type: "live_sell_order".to_string(),
+                                            market_slug: request.market_slug.clone(),
+                                            outcome: request.outcome.clone(),
+                                            side: "SELL".to_string(),
+                                            amount_usd: Some(request.amount_usd),
+                                            price: Some(request.price),
+                                            shares: Some(request.size),
+                                            success: true,
+                                            reason: format!("early exit executed: {reason}"),
+                                            exchange_response: Some(res.raw.clone()),
+                                            error: None,
+                                        },
+                                    )
+                                    .await
+                                {
+                                    warn!(%error, "trade execution LLM report failed");
+                                }
                             }
-                            Ok(res) => warn!(raw = ?res.raw, "Whale exit failed: order not accepted"),
+                            Ok(res) => {
+                                warn!(raw = ?res.raw, "Whale exit failed: order not accepted");
+                                if let Err(error) = llm_reporter
+                                    .report_trade_execution(
+                                        &settings,
+                                        TradeExecutionReport {
+                                            generated_at: Utc::now().to_rfc3339(),
+                                            event_type: "live_sell_order".to_string(),
+                                            market_slug: request.market_slug.clone(),
+                                            outcome: request.outcome.clone(),
+                                            side: "SELL".to_string(),
+                                            amount_usd: Some(request.amount_usd),
+                                            price: Some(request.price),
+                                            shares: Some(request.size),
+                                            success: false,
+                                            reason: format!("early exit rejected: {reason}"),
+                                            exchange_response: Some(res.raw.clone()),
+                                            error: None,
+                                        },
+                                    )
+                                    .await
+                                {
+                                    warn!(%error, "trade execution LLM report failed");
+                                }
+                            }
                             Err(e) => {
                                 let err_str = e.to_string();
                                 warn!(error = %err_str, "Whale exit failed: execution error");
+                                if let Err(error) = llm_reporter
+                                    .report_trade_execution(
+                                        &settings,
+                                        TradeExecutionReport {
+                                            generated_at: Utc::now().to_rfc3339(),
+                                            event_type: "live_sell_order".to_string(),
+                                            market_slug: request.market_slug.clone(),
+                                            outcome: request.outcome.clone(),
+                                            side: "SELL".to_string(),
+                                            amount_usd: Some(request.amount_usd),
+                                            price: Some(request.price),
+                                            shares: Some(request.size),
+                                            success: false,
+                                            reason: format!("early exit failed: {reason}"),
+                                            exchange_response: None,
+                                            error: Some(err_str.clone()),
+                                        },
+                                    )
+                                    .await
+                                {
+                                    warn!(%error, "trade execution LLM report failed");
+                                }
                                 if err_str.contains("balance is not enough") {
                                     info!("Clearing phantom position (balance 0, likely an unfilled buy order).");
                                     dashboard_state.write().await.push_activity("info", "Phantom Position Cleared", Some(&position.market_slug));

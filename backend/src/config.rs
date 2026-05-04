@@ -120,7 +120,7 @@ impl Settings {
             live_max_order_usd: env_parse("LIVE_MAX_ORDER_USD", 5.0)?,
             live_min_seconds_to_expiry: env_parse("LIVE_MIN_SECONDS_TO_EXPIRY", 3)?,
             live_order_cooldown_ms: env_parse("LIVE_ORDER_COOLDOWN_MS", 20_000)?,
-            live_order_type: env_string("LIVE_ORDER_TYPE", "GTC"),
+            live_order_type: env_string("LIVE_ORDER_TYPE", "FAK"),
             polymarket_clob_host: env_string("POLYMARKET_CLOB_HOST", "https://clob.polymarket.com"),
             polymarket_chain_id: env_parse("POLYMARKET_CHAIN_ID", 137)?,
             polymarket_signature_type: env_optional_parse("SIGNATURE_TYPE")?,
@@ -135,7 +135,7 @@ impl Settings {
             llm_model: env_string("LLM_MODEL", ""),
             llm_report_dir: PathBuf::from(env_string(
                 "LLM_REPORT_DIR",
-                "/var/lib/trading-bot/llm-reports",
+                "./data/llm-reports",
             )),
             llm_code_patch_mode: env_string("LLM_CODE_PATCH_MODE", "proposal_only"),
         })

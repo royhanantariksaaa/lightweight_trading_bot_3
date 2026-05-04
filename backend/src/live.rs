@@ -518,16 +518,18 @@ fn guarded_request(
     let mut size = size;
     let mut amount_usd = price * size;
 
-    // Polymarket CLOB usually requires a minimum of 5 shares
-    if size < 5.0 {
+    let is_fak = settings.live_order_type.trim().eq_ignore_ascii_case("FAK");
+    // Keep the legacy 5-share bump for resting order types; FAK is allowed to submit smaller size.
+    if !is_fak && size < 5.0 {
         let bumped_amount = price * 5.0;
         if bumped_amount <= settings.live_max_order_usd {
             size = 5.0;
             amount_usd = bumped_amount;
         } else {
             bail!(
-                "blocked live order: size {:.2} is below minimum 5.0 and bumping to ${:.2} would exceed LIVE_MAX_ORDER_USD={:.2}",
+                "blocked live order: size {:.2} is below minimum 5.0 for {} and bumping to ${:.2} would exceed LIVE_MAX_ORDER_USD={:.2}",
                 size,
+                settings.live_order_type,
                 bumped_amount,
                 settings.live_max_order_usd
             );
