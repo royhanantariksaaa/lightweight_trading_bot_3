@@ -120,6 +120,12 @@ impl BotState {
         }
     }
 
+    pub fn mark_order_resolved(&mut self, order_id: &str) {
+        if let Some(order) = self.bot_orders.get_mut(order_id) {
+            order.status = "resolved".to_string();
+        }
+    }
+
     pub fn record_exit(&mut self, market_slug: &str, outcome: &str) {
         let key = position_key(market_slug, outcome);
         self.bot_positions.remove(&key);
@@ -226,6 +232,20 @@ impl BotState {
 
     pub fn mark_closed_market_reported(&mut self, slug: String) {
         self.reported_closed_markets.insert(slug);
+    }
+
+    pub fn clear_inactive_markets(&mut self, active_slugs: &HashSet<String>) -> (usize, usize) {
+        let mut resolved_orders = 0;
+        for order in self.bot_orders.values_mut() {
+            if order.status == "open" && !active_slugs.contains(&order.market_slug) {
+                order.status = "resolved".to_string();
+                resolved_orders += 1;
+            }
+        }
+        let before_positions = self.bot_positions.len();
+        self.bot_positions
+            .retain(|_, position| active_slugs.contains(&position.market_slug));
+        (resolved_orders, before_positions - self.bot_positions.len())
     }
 }
 

@@ -63,6 +63,12 @@ pub struct LiveOrderResponse {
     pub raw: serde_json::Value,
 }
 
+#[derive(Clone, Debug, Serialize)]
+pub struct CancelLiveOrderResponse {
+    pub canceled: bool,
+    pub raw: serde_json::Value,
+}
+
 pub fn buy_request_from_snipe(
     settings: &Settings,
     signal: &SnipeSignal,
@@ -206,6 +212,34 @@ pub async fn post_live_order(
         order_id: Some(response.order_id),
         raw,
     })
+}
+
+pub async fn cancel_live_order(
+    settings: &Settings,
+    order_id: &str,
+) -> Result<CancelLiveOrderResponse> {
+    if settings.dry_run {
+        bail!("blocked live cancel: DRY_RUN=true");
+    }
+
+    let private_key = settings
+        .polymarket_private_key
+        .as_deref()
+        .context("POLYMARKET_PRIVATE_KEY is required for live cancel")?;
+    let signer = LocalSigner::from_str(private_key.trim())
+        .context("failed to parse POLYMARKET_PRIVATE_KEY")?
+        .with_chain_id(Some(settings.polymarket_chain_id));
+    let client = authenticated_clob_client(settings, &signer).await?;
+    let response = client
+        .cancel_order(order_id)
+        .await
+        .with_context(|| format!("failed to cancel Polymarket order {order_id}"))?;
+    let canceled = response.canceled.iter().any(|id| id == order_id);
+    let raw = serde_json::json!({
+        "canceled": response.canceled,
+        "not_canceled": response.not_canceled,
+    });
+    Ok(CancelLiveOrderResponse { canceled, raw })
 }
 
 pub async fn fetch_wallet_snapshot(settings: &Settings) -> WalletSnapshot {

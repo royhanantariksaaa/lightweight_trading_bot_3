@@ -19,7 +19,10 @@ use tracing::{error, info, warn};
 use crate::config::Settings;
 use crate::dashboard::{DashboardState, SharedDashboard, serve_dashboard};
 use crate::llm::LlmReporter;
-use crate::live::{buy_request_from_snipe, fetch_wallet_snapshot, post_live_order, redeem_winnings, sell_request_from_position};
+use crate::live::{
+    buy_request_from_snipe, cancel_live_order, fetch_wallet_snapshot, post_live_order,
+    redeem_winnings, sell_request_from_position,
+};
 use crate::polymarket::PolymarketClient;
 use crate::snipe::{WhaleContext, find_last_minute_5m_snipes};
 use crate::state::{BotState, now_ms};
@@ -130,6 +133,15 @@ async fn run_bot(
                         .iter()
                         .map(|market| market.slug.clone())
                         .collect::<HashSet<_>>();
+                    let (resolved_orders, resolved_positions) =
+                        state.clear_inactive_markets(&active_slugs);
+                    if resolved_orders > 0 || resolved_positions > 0 {
+                        info!(
+                            resolved_orders,
+                            resolved_positions,
+                            "cleared local bot state for inactive markets"
+                        );
+                    }
                     let closed_observed = last_seen_markets
                         .values()
                         .filter(|market| {
@@ -175,15 +187,42 @@ async fn run_bot(
                     let whale_ctx = WhaleContext { signals: whale_signals };
                     let signals = find_last_minute_5m_snipes(&settings, &markets, &whale_ctx);
                     let wallet = fetch_wallet_snapshot(&settings).await;
+                    for order in stale_live_orders(&wallet, settings.maker_order_ttl_ms) {
+                        match cancel_live_order(&settings, &order.id).await {
+                            Ok(response) if response.canceled => {
+                                info!(order_id = %order.id, "cancelled stale live Polymarket order");
+                                state.mark_order_cancelled(&order.id);
+                                dashboard_state.write().await.push_activity(
+                                    "warn",
+                                    "Stale Order Cancelled",
+                                    Some(&format!("{} {} @ {:.2}", order.outcome, order.side, order.price)),
+                                );
+                            }
+                            Ok(response) => {
+                                warn!(order_id = %order.id, raw = ?response.raw, "stale order cancel was not accepted");
+                            }
+                            Err(error) => {
+                                warn!(order_id = %order.id, %error, "failed to cancel stale live order");
+                            }
+                        }
+                    }
                     for signal in &signals {
                         if signal.dry_run {
                             info!(?signal, "DRY RUN: last-minute 5m snipe candidate");
                         } else if now_ms() - last_live_order_ms < settings.live_order_cooldown_ms {
                             info!(?signal, "live order cooldown active: skipping candidate");
-                        } else if let Some(exit_ms) = state.recent_exit_ms(&signal.market_slug, &signal.outcome) {
-                            let age = now_ms() - exit_ms;
-                            if age < 10_000 { // 10 second "Greed Cooldown"
-                                info!(?signal, age_ms = age, "RE-ENTRY BLOCKED: Greed cooldown active (last exit was {}s ago)", age / 1000);
+                        } else {
+                            if let Some(exit_ms) = state.recent_exit_ms(&signal.market_slug, &signal.outcome) {
+                                let age = now_ms() - exit_ms;
+                                if age < 10_000 { // 10 second "Greed Cooldown"
+                                    info!(?signal, age_ms = age, "RE-ENTRY BLOCKED: Greed cooldown active (last exit was {}s ago)", age / 1000);
+                                    continue;
+                                }
+                            }
+                            if state.open_orders_for_market(&signal.market_slug)
+                                >= settings.max_open_orders_per_market
+                            {
+                                info!(?signal, "open order cap active: skipping candidate");
                                 continue;
                             }
                             match buy_request_from_snipe(&settings, signal) {
@@ -200,27 +239,30 @@ async fn run_bot(
                                                 .order_id
                                                 .unwrap_or_else(|| format!("clob-{}", now_ms()));
                                             state.record_bot_order_with_id(
-                                                order_id,
+                                                order_id.clone(),
                                                 signal.market_slug.clone(),
                                                 signal.outcome.clone(),
                                                 signal.price,
                                                 request.size,
                                             );
-                                            if state.bot_owns_position(&signal.market_slug, &signal.outcome) {
-                                                info!(?signal, "AVERAGING DOWN: Adding to existing position");
-                                                state.record_position_addition(
-                                                    &signal.market_slug,
-                                                    &signal.outcome,
-                                                    signal.price,
-                                                    request.size,
-                                                );
-                                            } else {
-                                                state.record_position(
-                                                    signal.market_slug.clone(),
-                                                    signal.outcome.clone(),
-                                                    signal.price,
-                                                    request.size,
-                                                );
+                                            if response_filled_immediately(&response.raw) {
+                                                if state.bot_owns_position(&signal.market_slug, &signal.outcome) {
+                                                    info!(?signal, "AVERAGING DOWN: Adding to existing position");
+                                                    state.record_position_addition(
+                                                        &signal.market_slug,
+                                                        &signal.outcome,
+                                                        signal.price,
+                                                        request.size,
+                                                    );
+                                                } else {
+                                                    state.record_position(
+                                                        signal.market_slug.clone(),
+                                                        signal.outcome.clone(),
+                                                        signal.price,
+                                                        request.size,
+                                                    );
+                                                }
+                                                state.mark_order_resolved(&order_id);
                                             }
                                             last_live_order_ms = now_ms();
                                             info!(?request, raw = ?response.raw, "placed live Polymarket CLOB V2 buy order");
@@ -400,4 +442,33 @@ async fn run_bot(
         state.save(&settings.state_path).await?;
         sleep(Duration::from_millis(settings.poll_interval_ms)).await;
     }
+}
+
+fn stale_live_orders(
+    wallet: &crate::live::WalletSnapshot,
+    ttl_ms: i64,
+) -> Vec<crate::live::OpenOrderSnapshot> {
+    let cutoff = Utc::now() - ChronoDuration::milliseconds(ttl_ms);
+    wallet
+        .open_orders
+        .iter()
+        .filter(|order| {
+            chrono::DateTime::parse_from_rfc3339(&order.created_at)
+                .map(|created_at| created_at.with_timezone(&Utc) <= cutoff)
+                .unwrap_or(false)
+        })
+        .cloned()
+        .collect()
+}
+
+fn response_filled_immediately(raw: &serde_json::Value) -> bool {
+    raw.get("trade_ids")
+        .and_then(serde_json::Value::as_array)
+        .map(|trade_ids| !trade_ids.is_empty())
+        .unwrap_or(false)
+        || raw
+            .get("status")
+            .and_then(serde_json::Value::as_str)
+            .map(|status| status.to_ascii_lowercase().contains("matched"))
+            .unwrap_or(false)
 }
