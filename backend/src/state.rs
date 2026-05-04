@@ -28,10 +28,14 @@ pub struct BotOrder {
 pub struct BotPosition {
     pub market_slug: String,
     pub outcome: String,
+    #[serde(alias = "entry_price")]
     pub avg_entry_price: f64,
+    #[serde(alias = "shares")]
     pub total_shares: f64,
+    #[serde(default)]
     pub total_cost_usd: f64,
     pub opened_at_ms: i64,
+    #[serde(default)]
     pub last_buy_at_ms: i64,
 }
 
@@ -45,9 +49,24 @@ pub struct SignalCounter {
 impl BotState {
     pub async fn load_or_default(path: &Path) -> Result<Self> {
         match tokio::fs::read_to_string(path).await {
-            Ok(raw) => Ok(serde_json::from_str(&raw)?),
+            Ok(raw) => {
+                let mut state: Self = serde_json::from_str(&raw)?;
+                state.migrate_positions();
+                Ok(state)
+            }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
             Err(error) => Err(error.into()),
+        }
+    }
+
+    fn migrate_positions(&mut self) {
+        for position in self.bot_positions.values_mut() {
+            if position.total_cost_usd <= 0.0 {
+                position.total_cost_usd = position.avg_entry_price * position.total_shares;
+            }
+            if position.last_buy_at_ms <= 0 {
+                position.last_buy_at_ms = position.opened_at_ms;
+            }
         }
     }
 
