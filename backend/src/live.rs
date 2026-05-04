@@ -172,14 +172,7 @@ pub async fn post_live_order(
     let token_id = U256::from_str(&request.token_id)
         .with_context(|| format!("invalid CLOB token_id={}", request.token_id))?;
     let price = decimal_from_f64(request.price, "price", 2)?;
-    let size_decimals = if request.order_type.trim().eq_ignore_ascii_case("FAK")
-        && matches!(request.side, LiveSide::Buy)
-    {
-        4
-    } else {
-        2
-    };
-    let size = decimal_from_f64(request.size, "size", size_decimals)?;
+    let size = decimal_from_f64(request.size, "size", 2)?;
     let order_type = sdk_order_type(&request.order_type)?;
 
     let response = client
@@ -527,15 +520,15 @@ fn guarded_request(
 
     let is_fak = settings.live_order_type.trim().eq_ignore_ascii_case("FAK");
     if is_fak && matches!(side, LiveSide::Buy) {
-        // Polymarket marketable BUY requires min $1 notional and supports taker precision up to 4 decimals.
-        // Round shares to 4 decimals and ensure post-rounded notional reaches $1.00.
-        let mut rounded_size = (size * 10_000.0).floor() / 10_000.0;
+        // SDK enforces 2-decimal lot size on order size.
+        // Keep size at 2 decimals and ensure post-rounded notional reaches $1.00.
+        let mut rounded_size = (size * 100.0).floor() / 100.0;
         if rounded_size <= 0.0 {
             bail!("blocked live order: invalid rounded size for FAK buy");
         }
         amount_usd = ((price * rounded_size) * 100.0).round() / 100.0;
         if amount_usd < 1.0 {
-            let min_size_for_one_usd = (1.0 / price * 10_000.0).ceil() / 10_000.0;
+            let min_size_for_one_usd = (1.0 / price * 100.0).ceil() / 100.0;
             rounded_size = rounded_size.max(min_size_for_one_usd);
             amount_usd = ((price * rounded_size) * 100.0).round() / 100.0;
         }
