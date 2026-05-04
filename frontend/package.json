@@ -1,0 +1,22 @@
+{
+  "name": "lightweight-trading-bot-3",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "vite build",
+    "preview": "vite preview --host 127.0.0.1"
+  },
+  "dependencies": {
+    "@tailwindcss/vite": "^4.2.4",
+    "lucide-solid": "^1.14.0",
+    "solid-js": "^1.9.10",
+    "tailwindcss": "^4.2.4",
+    "vite": "^7.3.0",
+    "vite-plugin-solid": "^2.11.8"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1",
+    "typescript": "^5.9.3"
+  }
+}

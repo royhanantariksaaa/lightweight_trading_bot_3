@@ -41,7 +41,7 @@ The bot is intentionally **buy-only** unless `ALLOW_LIVE_SELLS=true` is explicit
 ## Suggested first run
 
 ```bash
-cp .env.example .env
+cp backend/.env.example backend/.env
 npm install
 npm run dev
 ```

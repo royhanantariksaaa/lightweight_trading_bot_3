@@ -36,14 +36,25 @@ export type DashboardStatus = {
   watched_markets: WatchedMarket[];
   latest_whale_signal?: WhaleSignal | null;
   whale_signals: WhaleSignal[];
+  activities: ActivityLog[];
   last_error?: string | null;
   dry_run: boolean;
   allow_live_buys: boolean;
+  allow_live_sells: boolean;
   live_max_order_usd: number;
+  snipe_max_position_usd: number;
   wallet_configured: boolean;
   funder_address: string;
   signature_type?: number | null;
   wallet: WalletSnapshot;
+};
+
+export type ActivityLog = {
+  id: string;
+  timestamp_ms: number;
+  level: "info" | "warn" | "success" | "whale" | "error";
+  message: string;
+  detail?: string;
 };
 
 export type WalletSnapshot = {
@@ -85,7 +96,9 @@ export type ManualOrderResponse = {
 export type RuntimeSettingsUpdate = {
   dry_run: boolean;
   allow_live_buys: boolean;
+  allow_live_sells: boolean;
   live_max_order_usd: number;
+  snipe_max_position_usd: number;
   funder_address: string;
   signature_type?: number | null;
   private_key?: string | null;

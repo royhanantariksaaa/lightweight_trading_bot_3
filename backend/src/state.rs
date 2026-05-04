@@ -103,6 +103,26 @@ impl BotState {
         self.recent_exits.insert(key, now_ms());
     }
 
+    pub fn record_position(
+        &mut self,
+        market_slug: String,
+        outcome: String,
+        entry_price: f64,
+        shares: f64,
+    ) {
+        let key = position_key(&market_slug, &outcome);
+        self.bot_positions.insert(
+            key,
+            BotPosition {
+                market_slug,
+                outcome,
+                entry_price,
+                shares,
+                opened_at_ms: now_ms(),
+            },
+        );
+    }
+
     pub fn bot_owns_position(&self, market_slug: &str, outcome: &str) -> bool {
         self.bot_positions
             .contains_key(&position_key(market_slug, outcome))

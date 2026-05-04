@@ -8,10 +8,6 @@ description = "Safety-first lightweight Polymarket 5m last-minute snipe bot with
 name = "lightweight-trading-bot-3"
 path = "src/main.rs"
 
-[[bin]]
-name = "binance-basis-test"
-path = "scripts/test.rs"
-
 [dependencies]
 anyhow = "1"
 axum = "0.7"

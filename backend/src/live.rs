@@ -1,5 +1,6 @@
 use anyhow::{Context, Result, anyhow, bail};
 use polymarket_client_sdk_v2::auth::{LocalSigner, Normal, Signer as _};
+use tracing::{error, warn};
 use polymarket_client_sdk_v2::clob::types::request::{BalanceAllowanceRequest, OrdersRequest};
 use polymarket_client_sdk_v2::clob::types::{AssetType, OrderType, Side, SignatureType};
 use polymarket_client_sdk_v2::clob::{Client as ClobClient, Config as ClobConfig};
@@ -52,6 +53,7 @@ pub struct LiveOrderRequest {
 #[serde(rename_all = "UPPERCASE")]
 pub enum LiveSide {
     Buy,
+    Sell,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -112,6 +114,37 @@ pub fn buy_request_from_market(
     )
 }
 
+pub fn sell_request_from_position(
+    settings: &Settings,
+    market: &MarketSnapshot,
+    outcome_name: &str,
+    shares: f64,
+) -> Result<LiveOrderRequest> {
+    let outcome = market
+        .outcomes
+        .iter()
+        .find(|outcome| outcome.name.eq_ignore_ascii_case(outcome_name))
+        .ok_or_else(|| anyhow!("outcome {outcome_name} not found for {}", market.slug))?;
+    let token_id = outcome
+        .token_id
+        .clone()
+        .ok_or_else(|| anyhow!("cannot place order without clob token_id"))?;
+    let price = outcome
+        .best_bid
+        .or(outcome.best_ask)
+        .unwrap_or(outcome.price);
+    guarded_request(
+        settings,
+        token_id,
+        market.slug.clone(),
+        outcome.name.clone(),
+        LiveSide::Sell,
+        price,
+        shares,
+        None,
+    )
+}
+
 pub async fn post_live_order(
     settings: &Settings,
     request: &LiveOrderRequest,
@@ -132,8 +165,8 @@ pub async fn post_live_order(
 
     let token_id = U256::from_str(&request.token_id)
         .with_context(|| format!("invalid CLOB token_id={}", request.token_id))?;
-    let price = decimal_from_f64(request.price, "price")?;
-    let size = decimal_from_f64(request.size, "size")?;
+    let price = decimal_from_f64(request.price, "price", 2)?;
+    let size = decimal_from_f64(request.size, "size", 2)?;
     let order_type = sdk_order_type(&request.order_type)?;
 
     let response = client
@@ -145,6 +178,17 @@ pub async fn post_live_order(
         .order_type(order_type)
         .build_sign_and_post(&signer)
         .await
+        .map_err(|e| {
+            error!(
+                raw_error = ?e,
+                token_id = %request.token_id,
+                price = %request.price,
+                size = %request.size,
+                order_type = %request.order_type,
+                "CLOB SDK build_sign_and_post failed — raw error above"
+            );
+            e
+        })
         .context("failed to build, sign, and post Polymarket CLOB V2 order")?;
 
     let raw = serde_json::json!({
@@ -341,7 +385,25 @@ fn sdk_order_type(raw: &str) -> Result<OrderType> {
 fn sdk_side(side: &LiveSide) -> Side {
     match side {
         LiveSide::Buy => Side::Buy,
+        LiveSide::Sell => Side::Sell,
     }
+}
+
+pub async fn redeem_winnings(settings: &Settings) -> Result<()> {
+    if settings.dry_run || !settings.auto_redeem {
+        return Ok(());
+    }
+
+    let _private_key = settings
+        .polymarket_private_key
+        .as_deref()
+        .context("POLYMARKET_PRIVATE_KEY required for redeem")?;
+    
+    // TODO: The 0.6.0-canary SDK seems to have moved the redeem method or uses a different builder.
+    // client.redeem().await.context("failed to redeem winnings")?;
+    warn!("Auto-redeem is not yet fully implemented for this SDK version");
+    
+    Ok(())
 }
 
 fn sdk_signature_type(raw: Option<u8>) -> Result<Option<SignatureType>> {
@@ -355,11 +417,21 @@ fn sdk_signature_type(raw: Option<u8>) -> Result<Option<SignatureType>> {
     }
 }
 
-fn decimal_from_f64(value: f64, label: &str) -> Result<Decimal> {
+fn decimal_from_f64(value: f64, label: &str, decimals: usize) -> Result<Decimal> {
     if !value.is_finite() {
         bail!("invalid live order {label} {value}");
     }
-    Decimal::from_str(&format!("{value:.6}"))
+    // We format to the max decimals but then trim the string if it's something like "0.740" 
+    // to avoid strict tick size validation errors on some markets.
+    let s = format!("{value:.decimals$}");
+    let trimmed = if s.contains('.') {
+        let t = s.trim_end_matches('0').trim_end_matches('.');
+        if t.is_empty() { "0" } else { t }
+    } else {
+        &s
+    };
+    
+    Decimal::from_str(trimmed)
         .with_context(|| format!("failed to convert live order {label}={value} to Decimal"))
 }
 
@@ -396,7 +468,25 @@ fn guarded_request(
         }
     }
 
-    let amount_usd = price * size;
+    let mut size = size;
+    let mut amount_usd = price * size;
+
+    // Polymarket CLOB usually requires a minimum of 5 shares
+    if size < 5.0 {
+        let bumped_amount = price * 5.0;
+        if bumped_amount <= settings.live_max_order_usd {
+            size = 5.0;
+            amount_usd = bumped_amount;
+        } else {
+            bail!(
+                "blocked live order: size {:.2} is below minimum 5.0 and bumping to ${:.2} would exceed LIVE_MAX_ORDER_USD={:.2}",
+                size,
+                bumped_amount,
+                settings.live_max_order_usd
+            );
+        }
+    }
+
     if amount_usd > settings.live_max_order_usd {
         bail!(
             "blocked live order: ${:.2} exceeds LIVE_MAX_ORDER_USD={:.2}",

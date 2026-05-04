@@ -5,9 +5,10 @@ use axum::{
     routing::{get, post},
 };
 use serde::{Deserialize, Serialize};
-use std::{net::SocketAddr, sync::Arc};
+use std::{collections::VecDeque, net::SocketAddr, sync::Arc};
 use tokio::sync::RwLock;
 use tower_http::cors::CorsLayer;
+use uuid::Uuid;
 
 use crate::config::{RuntimeSettingsUpdate, Settings};
 use crate::live::{
@@ -15,6 +16,15 @@ use crate::live::{
 };
 use crate::polymarket::MarketSnapshot;
 use crate::snipe::SnipeSignal;
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct ActivityLog {
+    pub id: String,
+    pub timestamp_ms: u64,
+    pub level: String, // "info", "warn", "success", "whale"
+    pub message: String,
+    pub detail: Option<String>,
+}
 
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct DashboardState {
@@ -24,14 +34,33 @@ pub struct DashboardState {
     pub watched_markets: Vec<MarketSnapshot>,
     pub latest_whale_signal: Option<WhaleSignal>,
     pub whale_signals: Vec<WhaleSignal>,
+    pub last_snipe: Option<SnipeSignal>,
     pub last_error: Option<String>,
     pub dry_run: bool,
     pub allow_live_buys: bool,
     pub live_max_order_usd: f64,
+    pub snipe_max_position_usd: f64,
     pub wallet_configured: bool,
     pub funder_address: String,
     pub signature_type: Option<u8>,
     pub wallet: WalletSnapshot,
+    pub activities: VecDeque<ActivityLog>,
+}
+
+impl DashboardState {
+    pub fn push_activity(&mut self, level: &str, message: &str, detail: Option<&str>) {
+        let log = ActivityLog {
+            id: Uuid::new_v4().to_string(),
+            timestamp_ms: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64,
+            level: level.to_string(),
+            message: message.to_string(),
+            detail: detail.map(|s| s.to_string()),
+        };
+        self.activities.push_front(log);
+        if self.activities.len() > 50 {
+            self.activities.pop_back();
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -144,7 +173,7 @@ async fn manual_order(
                 return Json(ManualOrderResponse {
                     accepted: false,
                     live: false,
-                    message: error.to_string(),
+                    message: format!("{:#}", error),
                     order_id: None,
                 });
             }
@@ -178,7 +207,7 @@ async fn manual_order(
         Err(error) => Json(ManualOrderResponse {
             accepted: false,
             live: true,
-            message: error.to_string(),
+            message: format!("{:#}", error),
             order_id: None,
         }),
     }
@@ -196,6 +225,7 @@ async fn update_settings(
             dashboard.dry_run = settings.dry_run;
             dashboard.allow_live_buys = settings.allow_live_buys;
             dashboard.live_max_order_usd = settings.live_max_order_usd;
+            dashboard.snipe_max_position_usd = settings.snipe_max_position_usd;
             dashboard.wallet_configured = settings.polymarket_private_key.is_some();
             dashboard.funder_address = settings.polymarket_funder_address.clone();
             dashboard.signature_type = settings.polymarket_signature_type;

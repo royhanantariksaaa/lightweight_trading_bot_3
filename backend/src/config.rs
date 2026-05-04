@@ -126,18 +126,44 @@ impl Settings {
         let mut next = self.clone();
         next.dry_run = update.dry_run;
         next.allow_live_buys = update.allow_live_buys;
+        next.allow_live_sells = update.allow_live_sells;
         next.live_max_order_usd = update.live_max_order_usd;
+        next.snipe_max_position_usd = update.snipe_max_position_usd;
         next.polymarket_signature_type = update.signature_type;
         next.polymarket_funder_address = update.funder_address.trim().to_string();
+
+        let mut env_updates = vec![
+            ("DRY_RUN", update.dry_run.to_string()),
+            ("ALLOW_LIVE_BUYS", update.allow_live_buys.to_string()),
+            ("ALLOW_LIVE_SELLS", update.allow_live_sells.to_string()),
+            ("LIVE_MAX_ORDER_USD", update.live_max_order_usd.to_string()),
+            ("SNIPE_MAX_POSITION_USD", update.snipe_max_position_usd.to_string()),
+            ("FUNDER_ADDRESS", update.funder_address.trim().to_string()),
+        ];
+
+        if let Some(st) = update.signature_type {
+            env_updates.push(("SIGNATURE_TYPE", st.to_string()));
+        } else {
+            env_updates.push(("SIGNATURE_TYPE", "".to_string()));
+        }
+
         if let Some(private_key) = update.private_key {
             let trimmed = private_key.trim();
             next.polymarket_private_key = if trimmed.is_empty() {
+                env_updates.push(("POLYMARKET_PRIVATE_KEY", "".to_string()));
                 None
             } else {
+                env_updates.push(("POLYMARKET_PRIVATE_KEY", trimmed.to_string()));
                 Some(trimmed.to_string())
             };
         }
+
         next.validate_runtime_wallet()?;
+        
+        if let Err(e) = persist_env(&env_updates) {
+            warn!("Failed to persist settings to .env: {}", e);
+        }
+
         *self = next;
         Ok(())
     }
@@ -192,7 +218,9 @@ impl Settings {
 pub struct RuntimeSettingsUpdate {
     pub dry_run: bool,
     pub allow_live_buys: bool,
+    pub allow_live_sells: bool,
     pub live_max_order_usd: f64,
+    pub snipe_max_position_usd: f64,
     pub funder_address: String,
     pub signature_type: Option<u8>,
     pub private_key: Option<String>,
@@ -262,4 +290,35 @@ where
             .map_err(|error| anyhow::anyhow!("failed to parse env {key}={value}: {error}")),
         _ => Ok(None),
     }
+}
+
+fn persist_env(updates: &[(&str, String)]) -> Result<()> {
+    // Find the .env file path using dotenvy if possible, or fallback to current directory
+    let env_path = std::env::current_dir()?.join(".env");
+    let content = std::fs::read_to_string(&env_path).unwrap_or_default();
+    let mut lines: Vec<String> = content.lines().map(ToString::to_string).collect();
+
+    for (key, value) in updates {
+        let prefix = format!("{key}=");
+        let mut found = false;
+        for line in lines.iter_mut() {
+            if line.starts_with(&prefix) {
+                *line = format!("{key}={value}");
+                found = true;
+                break;
+            }
+        }
+        if !found {
+            lines.push(format!("{key}={value}"));
+        }
+    }
+
+    // Ensure the file ends with a newline
+    let mut new_content = lines.join("\n");
+    if !new_content.ends_with('\n') {
+        new_content.push('\n');
+    }
+
+    std::fs::write(&env_path, new_content)?;
+    Ok(())
 }
