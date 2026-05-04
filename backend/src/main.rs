@@ -145,11 +145,10 @@ async fn run_bot(
                     let closed_observed = last_seen_markets
                         .values()
                         .filter(|market| {
-                            !active_slugs.contains(&market.slug)
-                                && market
-                                    .end_time
-                                    .map(|end_time| end_time <= Utc::now() + ChronoDuration::seconds(5))
-                                    .unwrap_or(false)
+                            market
+                                .end_time
+                                .map(|end_time| end_time <= Utc::now() - ChronoDuration::seconds(10))
+                                .unwrap_or(false)
                                 && !state.closed_market_reported(&market.slug)
                         })
                         .cloned()
