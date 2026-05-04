@@ -29,7 +29,7 @@ export function ActivityFeed(props: { activities: ActivityLog[] }) {
   };
 
   return (
-    <div class="bg-deep-bg border border-soft-line rounded-xl overflow-hidden h-full flex flex-col shadow-2xl">
+    <div class="bg-deep-bg border border-soft-line rounded-xl overflow-hidden flex-1 min-h-0 flex flex-col shadow-2xl">
       <div class="px-4 py-3 border-b border-soft-line flex items-center justify-between bg-black/20">
         <div class="flex items-center gap-2">
           <Activity size={16} class="text-blue" />

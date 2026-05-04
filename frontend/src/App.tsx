@@ -75,7 +75,7 @@ export function App() {
         <SettingsModal current={current()} onClose={() => setSettingsOpen(false)} onRefresh={refresh} />
       </Show>
 
-      <div class="w-[min(100%,1080px)] grid grid-cols-1 min-[1000px]:grid-cols-[minmax(0,738px)_272px] gap-4 min-[1000px]:gap-[38px] mx-auto pt-[26px] px-5 pb-3">
+      <div class="w-[min(100%,1080px)] grid grid-cols-1 min-[1080px]:grid-cols-[1fr_300px] gap-4 min-[1080px]:gap-6 mx-auto pt-[26px] px-5 pb-3">
         <section class="min-w-0 grid gap-2.5 content-start" aria-label="Current active 5m markets">
           <div class="flex flex-col min-[720px]:flex-row min-[720px]:items-center min-[720px]:h-[38px] border border-soft-line rounded-[9px] bg-panel overflow-hidden">
             <Metric label="Mode" value={live() ? "LIVE" : "PAPER"} hot={live()} icon={Activity} />

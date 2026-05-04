@@ -66,11 +66,11 @@ export function ManualOrderSidebar(props: {
   }
 
   return (
-    <aside class="grid gap-3 content-start" aria-label="Manual order panel">
-      <div class="p-3.5 border border-soft-line rounded-xl bg-panel shadow-[0_4px_12px_rgba(0,0,0,0.1)]">
-        <div class="flex items-center justify-between pb-2.5 border-b border-soft-line">
+    <aside class="grid gap-3 content-start shrink-0 min-w-0 w-full" aria-label="Manual order panel">
+      <div class="p-3.5 border border-soft-line rounded-xl bg-panel shadow-[0_4px_12px_rgba(0,0,0,0.1)] min-w-0">
+        <div class="flex items-center justify-between pb-2.5 border-b border-soft-line min-w-0 gap-2">
           <strong class="flex items-center gap-1.5 text-[0.8rem] border-b-2 border-[#dfe7ef] whitespace-nowrap flex-none"><MousePointerClick size={14} /> Manual Buy</strong>
-          <span class="text-[0.8rem] text-[#9aa9b7] min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-right ml-3">{props.selectedMarket?.slug ?? "No active market"}</span>
+          <span class="text-[0.8rem] text-[#9aa9b7] min-w-0 block truncate text-right">{props.selectedMarket?.slug ?? "No active market"}</span>
         </div>
         <div class="flex items-center gap-2.5 mt-4">
           <button
@@ -101,8 +101,8 @@ export function ManualOrderSidebar(props: {
               class={`min-w-0 flex-1 min-h-[56px] border rounded-lg transition-all duration-150 ease-in-out cursor-pointer ${stakeUsd() === amount ? 'border-blue bg-[#1a2731] text-[#e8eff6]' : 'border-soft-line bg-[#151d24] text-[#e8eff6] hover:bg-[#18232c] hover:border-[rgba(255,255,255,0.15)]'}`}
               onClick={() => setStakeUsd(amount)}
             >
-              <strong class="block text-[1rem] font-bold">${amount}</strong>
-              <small class="block mt-1 text-[#2dc978] text-[0.6rem]">win {props.compactUsd(payout(amount, selectedOutcome(), props.selectedMarket, props.liveQuotes))}</small>
+              <strong class="block text-[1rem] font-bold truncate">${amount}</strong>
+              <small class="block mt-1 text-[#2dc978] text-[0.6rem] truncate">win {props.compactUsd(payout(amount, selectedOutcome(), props.selectedMarket, props.liveQuotes))}</small>
             </button>
           ))}
         </div>

@@ -235,7 +235,15 @@ async fn run_bot(
                                 state.record_exit(&position.market_slug, &position.outcome);
                             }
                             Ok(res) => warn!(raw = ?res.raw, "Whale exit failed: order not accepted"),
-                            Err(e) => warn!(error = ?e, "Whale exit failed: execution error"),
+                            Err(e) => {
+                                let err_str = e.to_string();
+                                warn!(error = %err_str, "Whale exit failed: execution error");
+                                if err_str.contains("balance is not enough") {
+                                    info!("Clearing phantom position (balance 0, likely an unfilled buy order).");
+                                    dashboard_state.write().await.push_activity("info", "Phantom Position Cleared", Some(&position.market_slug));
+                                    state.record_exit(&position.market_slug, &position.outcome);
+                                }
+                            }
                         }
                     }
                     Err(e) => warn!(error = ?e, "Failed to build early exit request"),
