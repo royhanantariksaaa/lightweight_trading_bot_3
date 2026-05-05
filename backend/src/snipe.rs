@@ -262,7 +262,9 @@ fn pick_phase1_outcome(
         ((market.volume + market.liquidity) / settings.snipe_liquidity_scale_usd).clamp(0.0, 1.0);
     let confidence =
         (0.55 * book_strength + 0.25 * whale_alignment + 0.20 * liquidity_quality).clamp(0.0, 1.0);
-    if confidence < 0.45 {
+    let price_premium = (buy_price - 0.50).max(0.0);
+    let expected_edge = confidence - price_premium;
+    if expected_edge < 0.30 {
         return None;
     }
 
@@ -277,20 +279,22 @@ fn pick_phase1_outcome(
         outcome: outcome.name.clone(),
         token_id: outcome.token_id.clone(),
         price: buy_price,
-        expected_edge: confidence,
+        expected_edge,
         seconds_to_expiry: market.seconds_to_expiry,
         volume: market.volume,
         liquidity: market.liquidity,
         stake_usd,
         reason: format!(
-            "phase1-whale: {} {} trigger={} imbalance={:+.1}% whale_bias={:+.2} ref_delta={:+.4}% conf={:.3} tte={}s{}",
+            "phase1-whale: {} {} trigger={} imbalance={:+.1}% whale_bias={:+.2} ref_delta={:+.4}% edge={:.3} conf={:.3} price={:.2} tte={}s{}",
             target_outcome_name,
             symbol,
             trigger_label,
             book.imbalance_pct,
             whale_bias,
             price_delta_pct * 100.0,
+            expected_edge,
             confidence,
+            buy_price,
             market.seconds_to_expiry,
             momentum_detail,
         ),
