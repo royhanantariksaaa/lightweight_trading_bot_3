@@ -10,6 +10,52 @@ use crate::dashboard::WhaleSignal;
 use crate::polymarket::{ClosedMarketSnapshot, MarketSnapshot};
 use crate::state::{BotOrder, BotPosition, BotState};
 
+const QUANT_REVIEW_SYSTEM_PROMPT: &str = r#"You are the bot's Quantitative Trader / Market Microstructure Analyst / Software Engineer.
+
+Your job is to turn each closed-market or trade-execution report into practical strategy intelligence for a 5-minute Polymarket crypto bot.
+
+Required behavior:
+1. Act like a quant trader first: evaluate edge quality, entry timing, book/whale support, odds paid, expected value, and whether the trade should have been taken, skipped, exited earlier, or sized differently.
+2. Act like an analyst second: separate evidence from speculation. Use only the provided JSON. If required data is missing, say exactly what is missing and how to instrument it.
+3. Act like a software engineer third: propose minimal, safe parameter/code changes that improve the strategy without broad rewrites.
+4. Preserve safety guardrails: never suggest order size above $1, never suggest disabling wallet/order safety checks, never request private keys/secrets, never suggest restarting the bot from inside an agent session.
+5. Respect the current architecture: two-phase strategy, RTDS price feed, Binance book/whale context, GTC/FAK routing, background wallet fetch, order timeouts, adaptive TP.
+6. Prefer measurable rules over vague advice. Every recommendation must include the signal/threshold/metric it changes and the reason.
+7. If no change is justified, explicitly say HOLD/NO CHANGE and explain why.
+8. Code patches are review-only proposals. Keep patches minimal and include them only when the evidence strongly supports a change.
+
+Return JSON only. The frontend depends on these keys:
+- review_summary: 1-3 sentences describing what you think should happen next.
+- intended_action: one of "NO_CHANGE", "PARAMETER_TUNE", "CODE_PATCH", "INVESTIGATE", "DISABLE_SIGNAL", "ENABLE_SIGNAL".
+- expected_impact: concise expected effect on win rate, false positives, fills, exits, or risk.
+- evidence: array of concrete facts from the report.
+- strategy_recommendations: array of specific trading/strategy recommendations.
+- engineering_recommendations: array of implementation or instrumentation recommendations.
+- parameter_suggestions: array of { name, current, suggested, reason, confidence }.
+- risk_notes: array of risks or reasons not to change.
+- code_patch_unified_diff: optional string; empty string if no patch.
+"#;
+
+fn quant_review_schema() -> serde_json::Value {
+    json!({
+        "review_summary": "1-3 sentence summary of what should happen next",
+        "intended_action": "NO_CHANGE | PARAMETER_TUNE | CODE_PATCH | INVESTIGATE | DISABLE_SIGNAL | ENABLE_SIGNAL",
+        "expected_impact": "concise expected impact",
+        "evidence": ["specific facts from report"],
+        "strategy_recommendations": ["specific quant/trading recommendation"],
+        "engineering_recommendations": ["specific software/instrumentation recommendation"],
+        "parameter_suggestions": [{
+            "name": "ENV_OR_FIELD",
+            "current": "if known",
+            "suggested": "value",
+            "reason": "why this exact change helps",
+            "confidence": "low | medium | high"
+        }],
+        "risk_notes": ["risk or reason not to change"],
+        "code_patch_unified_diff": "optional review-only git diff, or empty string"
+    })
+}
+
 #[derive(Clone)]
 pub struct LlmReporter {
     http: Client,
@@ -127,14 +173,7 @@ impl LlmReporter {
                     "Any code patch must be reviewable and must not include secrets.".to_string(),
                 ],
                 code_change_policy: settings.llm_code_patch_mode.clone(),
-                requested_output_schema: json!({
-                    "market_summary": "short factual summary",
-                    "bot_decision_quality": "what the bot did well/poorly",
-                    "strategy_lessons": ["specific lesson"],
-                    "parameter_suggestions": [{"name": "ENV_OR_FIELD", "current": "if known", "suggested": "value", "reason": "why"}],
-                    "code_patch_unified_diff": "optional review-only git diff, or empty string",
-                    "risk_notes": ["risk or reason not to change"]
-                }),
+                requested_output_schema: quant_review_schema(),
             },
         };
 
@@ -161,7 +200,7 @@ impl LlmReporter {
                 "messages": [
                     {
                         "role": "system",
-                        "content": "You are a cautious trading-strategy review agent. Use only the report data. Do not claim certainty when the data is missing. Return concise JSON only. Code patches are review-only proposals and must preserve all safety guardrails."
+                        "content": QUANT_REVIEW_SYSTEM_PROMPT
                     },
                     {
                         "role": "user",
@@ -234,14 +273,11 @@ impl LlmReporter {
 
         let prompt = format!(
             "A trade execution event occurred in a Polymarket bot.\n\
-             Review this event for strategy/safety signals.\n\
-             Return concise JSON only with keys:\n\
-             - event_summary\n\
-             - execution_quality\n\
-             - risk_notes (array)\n\
-             - parameter_suggestions (array)\n\
-             - code_patch_unified_diff (string, optional)\n\n\
+             Review this event as a quantitative trader, market analyst, and software engineer.\n\
+             Decide whether the execution reveals a strategy edge, false positive, fill-quality issue, risk-control issue, or instrumentation gap.\n\
+             Return JSON only matching this schema:\n{}\n\n\
              EVENT JSON:\n{}",
+            serde_json::to_string_pretty(&quant_review_schema())?,
             report_json
         );
 
@@ -257,7 +293,7 @@ impl LlmReporter {
                 "messages": [
                     {
                         "role": "system",
-                        "content": "You are a cautious trading-strategy review agent. Use only the provided event data. Return concise JSON only."
+                        "content": QUANT_REVIEW_SYSTEM_PROMPT
                     },
                     {
                         "role": "user",
@@ -321,7 +357,7 @@ fn extract_message_content(content: &serde_json::Value) -> Option<String> {
 
 fn build_prompt(report_json: &str) -> String {
     format!(
-        "A 5-minute Polymarket crypto market has closed. Analyze it for strategy improvement.\n\nContext rules:\n- Treat observed_market as what the bot saw while trading.\n- Treat final_market as the post-close/resolution snapshot.\n- bot_positions and bot_orders are local bot-owned state, not the whole wallet.\n- recent_whale_signals are supporting context, not ground truth.\n- If you propose code, return a unified diff only in code_patch_unified_diff and keep it minimal.\n- Do not request secrets, private keys, or live wallet actions.\n\nREPORT JSON:\n{report_json}"
+        "A 5-minute Polymarket crypto market has closed. Analyze it for strategy improvement.\n\nContext rules:\n- Treat observed_market as what the bot saw while trading.\n- Treat final_market as the post-close/resolution snapshot.\n- bot_positions and bot_orders are local bot-owned state, not the whole wallet.\n- recent_whale_signals are supporting context, not ground truth.\n- Evaluate the event as a quantitative trader: edge, odds paid, phase quality, whale/book confirmation, false-positive risk, and exit quality.\n- Evaluate the event as a software engineer: exact thresholds/instrumentation/code paths to improve.\n- Return JSON only matching the requested schema in strategy_context.requested_output_schema.\n- If you propose code, return a unified diff only in code_patch_unified_diff and keep it minimal.\n- Do not request secrets, private keys, live wallet actions, or order sizes above $1.\n\nREPORT JSON:\n{report_json}"
     )
 }
 
