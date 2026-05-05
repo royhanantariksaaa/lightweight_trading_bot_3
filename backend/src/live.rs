@@ -657,23 +657,33 @@ fn guarded_request(
             // Smallest size_cents that brings maker_usdc to >= $1.00
             size_cents = (10_000i64 + price_cents - 1) / price_cents;
             // Walk up until the product is 2-decimal-clean, BUT cap at
-            // LIVE_MAX_ORDER_USD to prevent unbounded overshoot (e.g. price
-            // 0.79 would walk to 2.0 shares = $1.58 without a cap).
+            // LIVE_MAX_ORDER_USD to prevent unbounded overshoot.
             let max_micro_cents = (settings.live_max_order_usd * 10_000.0).round() as i64;
-            let start = size_cents;
+            let mut hit_cap = false;
             while (size_cents * price_cents) % 100 != 0 {
                 size_cents += 1;
                 if size_cents * price_cents > max_micro_cents {
-                    bail!(
-                        "blocked live order: no FAK-compliant size for price={price} within $1 cap (tried {start}-{} size cents, max {max_micro_cents})",
-                        size_cents
-                    );
+                    hit_cap = true;
+                    break;
                 }
             }
+            if hit_cap {
+                // No clean product within cap. Fall back to raw $1.00.
+                size = 1.0 / price;
+                amount_usd = 1.0;
+                warn!(
+                    price = %price,
+                    size = %size,
+                    "no FAK-compliant size within $1 cap; falling back to raw size"
+                );
+            } else {
+                size = size_cents as f64 / 100.0;
+                amount_usd = (size_cents * price_cents) as f64 / 10_000.0;
+            }
+        } else {
+            size = size_cents as f64 / 100.0;
+            amount_usd = (size_cents * price_cents) as f64 / 10_000.0;
         }
-
-        size = size_cents as f64 / 100.0;
-        amount_usd = (size_cents * price_cents) as f64 / 10_000.0;
     }
     // Keep the legacy 5-share bump for resting order types; FAK is allowed to submit smaller size.
     if !is_fak && size < 5.0 {
