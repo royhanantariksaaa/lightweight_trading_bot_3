@@ -177,30 +177,62 @@ async fn run_bot(
                         .collect::<Vec<_>>();
                     for observed in closed_observed {
                         let whale_signals = dashboard_state.read().await.whale_signals.clone();
-                        match polymarket.fetch_closed_market_snapshot(&observed).await {
-                            Ok(final_market) => match hermes_reporter
-                                .report_closed_market(
-                                    &settings,
-                                    observed.clone(),
-                                    final_market,
-                                    &state,
-                                    whale_signals,
-                                )
-                                .await
-                            {
-                                Ok(true) => {
-                                    info!(slug = %observed.slug, "closed market reported to LLM");
-                                    state.mark_closed_market_reported(observed.slug);
-                                }
-                                Ok(false) => {}
-                                Err(error) => {
-                                    warn!(%error, slug = %observed.slug, "closed market LLM report failed")
-                                }
-                            },
-                            Err(error) => {
-                                warn!(%error, slug = %observed.slug, "failed to fetch closed market snapshot")
-                            }
+                        let bot_positions = state
+                            .bot_positions
+                            .values()
+                            .filter(|position| position.market_slug == observed.slug)
+                            .cloned()
+                            .collect::<Vec<_>>();
+                        let bot_orders = state
+                            .bot_orders
+                            .values()
+                            .filter(|order| order.market_slug == observed.slug)
+                            .cloned()
+                            .collect::<Vec<_>>();
+                        let report_settings = settings.clone();
+                        let report_polymarket = polymarket.clone();
+                        let report_hermes = hermes_reporter.clone();
+                        let observed_slug = observed.slug.clone();
+
+                        state.mark_closed_market_reported(observed.slug.clone());
+                        if let Err(error) = state.save(&settings.state_path).await {
+                            warn!(%error, slug = %observed.slug, "failed to persist closed-market report marker");
                         }
+
+                        tokio::spawn(async move {
+                            let fetch_result = tokio::time::timeout(
+                                Duration::from_secs(20),
+                                report_polymarket.fetch_closed_market_snapshot(&observed),
+                            )
+                            .await;
+                            match fetch_result {
+                                Ok(Ok(final_market)) => match report_hermes
+                                    .report_closed_market_from_parts(
+                                        &report_settings,
+                                        observed,
+                                        final_market,
+                                        &bot_positions,
+                                        &bot_orders,
+                                        &whale_signals,
+                                    )
+                                    .await
+                                {
+                                    Ok(true) => {
+                                        info!(slug = %observed_slug, "closed market queued for async LLM report")
+                                    }
+                                    Ok(false) => {}
+                                    Err(error) => {
+                                        warn!(%error, slug = %observed_slug, "closed market LLM report failed")
+                                    }
+                                },
+                                Ok(Err(error)) => {
+                                    warn!(%error, slug = %observed_slug, "failed to fetch closed market snapshot")
+                                }
+                                Err(_) => {
+                                    warn!(slug = %observed_slug, "closed market snapshot fetch timed out")
+                                }
+                            }
+                        });
                     }
 
                     // Read whale signals and Binance books from dashboard to inform directional bias
