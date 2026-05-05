@@ -793,6 +793,22 @@ async fn run_bot(
                 {
                     continue;
                 }
+                // Never adopt both sides of the same market. If we already own the
+                // opposite outcome for this market, skip — it creates contradictory
+                // positions and can exceed the $1 cap unintentionally.
+                let opposite = if wallet_position.outcome.eq_ignore_ascii_case("Up") {
+                    "Down"
+                } else {
+                    "Up"
+                };
+                if state.bot_owns_position(&wallet_position.market_slug, opposite) {
+                    info!(
+                        market_slug = %wallet_position.market_slug,
+                        outcome = %wallet_position.outcome,
+                        "wallet reconciliation: skipping — already own opposite side"
+                    );
+                    continue;
+                }
                 info!(
                     market_slug = %wallet_position.market_slug,
                     outcome = %wallet_position.outcome,
@@ -924,6 +940,20 @@ async fn run_bot(
 
             // 2. Execute exits
             for (market, position, reason) in exits_to_process {
+                let exit_key = format!("{}::{}", position.market_slug, position.outcome);
+                let now = now_ms();
+                if let Some(last_attempt) = state.last_exit_attempt_ms.get(&exit_key) {
+                    if now - last_attempt < 20_000 {
+                        info!(
+                            market_slug = %position.market_slug,
+                            outcome = %position.outcome,
+                            ms_since_last = now - last_attempt,
+                            "exit retry cooldown active: skipping exit attempt"
+                        );
+                        continue;
+                    }
+                }
+                state.last_exit_attempt_ms.insert(exit_key.clone(), now);
                 match sell_request_from_position(
                     &settings,
                     &market,
@@ -939,6 +969,7 @@ async fn run_bot(
                         {
                             Ok(Ok(res)) if res.success => {
                                 info!(?request, %reason, "POSITION CLOSED: Early exit executed");
+                                state.last_exit_attempt_ms.remove(&exit_key);
                                 dashboard_state.write().await.push_activity(
                                     "warn",
                                     &format!("Exit: {}", reason),

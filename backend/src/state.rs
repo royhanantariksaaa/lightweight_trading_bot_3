@@ -13,6 +13,8 @@ pub struct BotState {
     pub signal_counts: HashMap<String, SignalCounter>,
     #[serde(default)]
     pub reported_closed_markets: HashSet<String>,
+    #[serde(default)]
+    pub last_exit_attempt_ms: HashMap<String, i64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
