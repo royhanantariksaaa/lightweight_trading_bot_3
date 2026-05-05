@@ -656,9 +656,19 @@ fn guarded_request(
         if size_cents * price_cents < 10_000 {
             // Smallest size_cents that brings maker_usdc to >= $1.00
             size_cents = (10_000i64 + price_cents - 1) / price_cents;
-            // Walk up until the product is also 2-decimal-clean
+            // Walk up until the product is 2-decimal-clean, BUT cap at
+            // LIVE_MAX_ORDER_USD to prevent unbounded overshoot (e.g. price
+            // 0.79 would walk to 2.0 shares = $1.58 without a cap).
+            let max_micro_cents = (settings.live_max_order_usd * 10_000.0).round() as i64;
+            let start = size_cents;
             while (size_cents * price_cents) % 100 != 0 {
                 size_cents += 1;
+                if size_cents * price_cents > max_micro_cents {
+                    bail!(
+                        "blocked live order: no FAK-compliant size for price={price} within $1 cap (tried {start}-{} size cents, max {max_micro_cents})",
+                        size_cents
+                    );
+                }
             }
         }
 
