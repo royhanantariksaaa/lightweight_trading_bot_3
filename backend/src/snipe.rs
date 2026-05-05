@@ -211,6 +211,14 @@ fn pick_phase1_outcome(
     // Phase 1 is a whale/book ride, not a contrarian lottery ticket.
     // If the live Polymarket reference price is already moving against the
     // Binance book direction, skip instead of buying cheap near-dead shares.
+    //
+    // Allow early Phase 1 signals when price_to_beat is still None (race:
+    // Polymarket API may need ~30s to populate it after market open).
+    // Fall back to Binance book + whale data only during the initial window.
+    //
+    // Phase 1 does NOT enforce the same minimum price delta as Phase 2.
+    // Binance depth imbalance is the primary signal; reference price
+    // alignment is a directional sanity check, not a magnitude gate.
     let price_delta_pct = match (market.price_to_beat, market.current_price) {
         (Some(price_to_beat), Some(current_price))
             if price_to_beat > 0.0 && current_price > 0.0 =>
@@ -219,10 +227,13 @@ fn pick_phase1_outcome(
             if going_up != (delta > 0.0) {
                 return None;
             }
-            if delta.abs() < settings.snipe_min_price_delta_pct {
-                return None;
-            }
             delta
+        }
+        _ if market.seconds_to_expiry > (300 - 30) && market.current_price.is_some() => {
+            // Early window: price_to_beat not yet available.
+            // Accept signal on Binance book + whale strength alone.
+            // Use a neutral delta to avoid penalizing the confidence score.
+            0.001
         }
         _ => return None,
     };
