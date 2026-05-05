@@ -221,6 +221,31 @@ impl BotState {
         should_remove
     }
 
+    pub fn update_optimistic_order_and_position(
+        &mut self,
+        order_id: &str,
+        market_slug: &str,
+        outcome: &str,
+        price: f64,
+        shares: f64,
+    ) {
+        if let Some(order) = self.bot_orders.get_mut(order_id) {
+            order.limit_price = price;
+            order.shares = shares;
+        }
+        if let Some(position) = self
+            .bot_positions
+            .get_mut(&position_key(market_slug, outcome))
+        {
+            if position.confirmation_status.as_deref() == Some("pending_exchange_confirmation") {
+                position.avg_entry_price = price;
+                position.total_shares = shares;
+                position.total_cost_usd = price * shares;
+                position.last_buy_at_ms = now_ms();
+            }
+        }
+    }
+
     pub fn replace_order_id(&mut self, old_id: &str, new_id: String) {
         if old_id == new_id {
             return;

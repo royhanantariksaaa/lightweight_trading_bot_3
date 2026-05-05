@@ -76,6 +76,20 @@ pub struct LiveOrderResponse {
     pub raw: serde_json::Value,
 }
 
+pub fn is_fak_liquidity_miss(error: &anyhow::Error) -> bool {
+    format!("{error:#}")
+        .to_ascii_lowercase()
+        .contains("no orders found to match")
+}
+
+pub fn live_order_error_summary(error: &anyhow::Error) -> String {
+    if is_fak_liquidity_miss(error) {
+        "FAK liquidity miss: no matching orders available at the submitted limit price".to_string()
+    } else {
+        error.to_string()
+    }
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct CancelLiveOrderResponse {
     pub canceled: bool,
@@ -106,6 +120,25 @@ pub fn buy_request_from_snipe(
         request.order_type = "FAK".to_string();
     }
     Ok(request)
+}
+
+pub fn retry_buy_request_at_price(
+    settings: &Settings,
+    request: &LiveOrderRequest,
+    price: f64,
+) -> Result<LiveOrderRequest> {
+    let mut retry = guarded_request(
+        settings,
+        request.token_id.clone(),
+        request.market_slug.clone(),
+        request.outcome.clone(),
+        request.side.clone(),
+        price,
+        (settings.live_max_order_usd / price).max(0.0),
+        None,
+    )?;
+    retry.order_type = request.order_type.clone();
+    Ok(retry)
 }
 
 pub fn buy_request_from_market(

@@ -22,7 +22,8 @@ use crate::dashboard::{DashboardState, SharedDashboard, serve_dashboard};
 use crate::hermes_reporter::HermesReporter;
 use crate::live::{
     buy_request_from_snipe, cancel_live_order, fetch_wallet_snapshot, hide_stale_display_orders,
-    post_live_order, redeem_winnings, sell_request_from_position,
+    is_fak_liquidity_miss, live_order_error_summary, post_live_order, redeem_winnings,
+    retry_buy_request_at_price, sell_request_from_position,
 };
 use crate::llm::TradeExecutionReport;
 use crate::polymarket::PolymarketClient;
@@ -367,7 +368,7 @@ async fn run_bot(
                                 continue;
                             }
                             match buy_request_from_snipe(&settings, signal) {
-                                Ok(request) => {
+                                Ok(mut request) => {
                                     info!(?signal, "SNIPE FOUND: placing live Polymarket order");
                                     let mut d = dashboard_state.write().await;
                                     d.last_snipe = Some(signal.clone());
@@ -516,8 +517,135 @@ async fn run_bot(
                                             }
                                         }
                                         Ok(Err(error)) => {
+                                            let summary = live_order_error_summary(&error);
+                                            let retry_candidate = signal.phase == "phase1"
+                                                && request.order_type.eq_ignore_ascii_case("FAK")
+                                                && is_fak_liquidity_miss(&error)
+                                                && request.price < 0.85;
+                                            if retry_candidate {
+                                                let retry_price = (request.price + 0.02).min(0.85);
+                                                match retry_buy_request_at_price(
+                                                    &settings,
+                                                    &request,
+                                                    retry_price,
+                                                ) {
+                                                    Ok(retry_request) => {
+                                                        dashboard_state.write().await.push_activity(
+                                                            "info",
+                                                            "FAK Retry",
+                                                            Some(&format!(
+                                                                "{} {} liquidity miss at {:.2}; retrying at {:.2} within $1 cap",
+                                                                request.outcome,
+                                                                request.market_slug,
+                                                                request.price,
+                                                                retry_request.price
+                                                            )),
+                                                        );
+                                                        match tokio::time::timeout(
+                                                            Duration::from_secs(15),
+                                                            post_live_order(
+                                                                &settings,
+                                                                &retry_request,
+                                                            ),
+                                                        )
+                                                        .await
+                                                        {
+                                                            Ok(Ok(response))
+                                                                if response.success =>
+                                                            {
+                                                                request = retry_request;
+                                                                state.update_optimistic_order_and_position(
+                                                                    &optimistic_order_id,
+                                                                    &signal.market_slug,
+                                                                    &signal.outcome,
+                                                                    request.price,
+                                                                    request.size,
+                                                                );
+                                                                let order_id = response
+                                                                    .order_id
+                                                                    .unwrap_or_else(|| {
+                                                                        format!("clob-{}", now_ms())
+                                                                    });
+                                                                state.replace_order_id(
+                                                                    &optimistic_order_id,
+                                                                    order_id.clone(),
+                                                                );
+                                                                state.confirm_position(
+                                                                    &signal.market_slug,
+                                                                    &signal.outcome,
+                                                                );
+                                                                if response_filled_immediately(
+                                                                    &response.raw,
+                                                                ) {
+                                                                    state.mark_order_resolved(
+                                                                        &order_id,
+                                                                    );
+                                                                }
+                                                                if let Err(error) = state
+                                                                    .save(&settings.state_path)
+                                                                    .await
+                                                                {
+                                                                    warn!(%error, "failed to persist accepted retry buy order state");
+                                                                }
+                                                                last_live_order_ms = now_ms();
+                                                                if signal.phase == "phase1" {
+                                                                    last_phase1_order_ms = now_ms();
+                                                                }
+                                                                info!(?request, raw = ?response.raw, "placed live Polymarket CLOB V2 buy order after FAK retry");
+                                                                dashboard_state.write().await.push_activity(
+                                                                    "success",
+                                                                    "Order Accepted After Retry",
+                                                                    Some(&format!("{} at {:.2}", request.market_slug, request.price)),
+                                                                );
+                                                                if let Err(report_error) = hermes_reporter
+                                                                    .report_trade_execution(
+                                                                        &settings,
+                                                                        TradeExecutionReport {
+                                                                            generated_at: Utc::now().to_rfc3339(),
+                                                                            event_type: "live_buy_order".to_string(),
+                                                                            market_slug: request.market_slug.clone(),
+                                                                            outcome: request.outcome.clone(),
+                                                                            side: "BUY".to_string(),
+                                                                            phase: Some(signal.phase.clone()),
+                                                                            amount_usd: Some(request.amount_usd),
+                                                                            price: Some(request.price),
+                                                                            shares: Some(request.size),
+                                                                            success: true,
+                                                                            reason: "order accepted after FAK liquidity retry".to_string(),
+                                                                            exchange_response: Some(response.raw.clone()),
+                                                                            error: None,
+                                                                        },
+                                                                    )
+                                                                    .await
+                                                                {
+                                                                    warn!(%report_error, "trade execution LLM report failed");
+                                                                }
+                                                                continue;
+                                                            }
+                                                            Ok(Ok(response)) => {
+                                                                warn!(?retry_request, raw = ?response.raw, "Polymarket retry order was not accepted");
+                                                            }
+                                                            Ok(Err(retry_error)) => {
+                                                                let retry_summary =
+                                                                    live_order_error_summary(
+                                                                        &retry_error,
+                                                                    );
+                                                                warn!(%retry_summary, ?retry_request, "FAK retry failed");
+                                                            }
+                                                            Err(_) => warn!(
+                                                                ?retry_request,
+                                                                "FAK retry timed out after 15s"
+                                                            ),
+                                                        }
+                                                    }
+                                                    Err(retry_error) => {
+                                                        warn!(%retry_error, "failed to build FAK retry request")
+                                                    }
+                                                }
+                                            }
                                             error!(
                                                 ?error,
+                                                summary = %summary,
                                                 "ERROR: failed to place live Polymarket CLOB V2 order"
                                             );
                                             state.mark_order_cancelled(&optimistic_order_id);
@@ -533,7 +661,7 @@ async fn run_bot(
                                             dashboard_state.write().await.push_activity(
                                                 "error",
                                                 "Trade Error",
-                                                Some(&error.to_string()),
+                                                Some(&summary),
                                             );
                                             if let Err(report_error) = hermes_reporter
                                                 .report_trade_execution(
@@ -549,10 +677,9 @@ async fn run_bot(
                                                         price: Some(request.price),
                                                         shares: Some(request.size),
                                                         success: false,
-                                                        reason: "order submission failed"
-                                                            .to_string(),
+                                                        reason: summary.clone(),
                                                         exchange_response: None,
-                                                        error: Some(error.to_string()),
+                                                        error: Some(summary.clone()),
                                                     },
                                                 )
                                                 .await
