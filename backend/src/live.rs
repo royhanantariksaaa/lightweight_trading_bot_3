@@ -1,5 +1,6 @@
 use anyhow::{Context, Result, anyhow, bail};
 use polymarket_client_sdk_v2::auth::{LocalSigner, Normal, Signer as _};
+use polymarket_client_sdk_v2::clob::types::Amount;
 use polymarket_client_sdk_v2::clob::types::request::{BalanceAllowanceRequest, OrdersRequest};
 use polymarket_client_sdk_v2::clob::types::{AssetType, OrderType, Side, SignatureType};
 use polymarket_client_sdk_v2::clob::{Client as ClobClient, Config as ClobConfig};
@@ -223,20 +224,41 @@ pub async fn post_live_order(
 
     let token_id = U256::from_str(&request.token_id)
         .with_context(|| format!("invalid CLOB token_id={}", request.token_id))?;
-    let price = decimal_from_f64(request.price, "price", 2)?;
     let order_type = sdk_order_type(&request.order_type)?;
 
-    let size = decimal_from_f64(request.size, "size", 2)?;
+    let is_marketable_buy = matches!(request.side, LiveSide::Buy)
+        && (request.order_type.eq_ignore_ascii_case("FAK")
+            || request.order_type.eq_ignore_ascii_case("FOK"));
 
-    let response = client
-        .limit_order()
-        .token_id(token_id)
-        .side(sdk_side(&request.side))
-        .price(price)
-        .size(size)
-        .order_type(order_type)
-        .build_sign_and_post(&signer)
-        .await
+    let order_result = if is_marketable_buy {
+        let amount =
+            Amount::usdc(Decimal::from_str("1.00").context("failed to parse $1.00 USDC amount")?)
+                .context("failed to build USDC amount for market order")?;
+        let price_opt = decimal_from_f64(request.price, "price", 2)?;
+        client
+            .market_order()
+            .token_id(token_id)
+            .side(sdk_side(&request.side))
+            .price(price_opt)
+            .amount(amount)
+            .order_type(order_type)
+            .build_sign_and_post(&signer)
+            .await
+    } else {
+        let price = decimal_from_f64(request.price, "price", 2)?;
+        let size = decimal_from_f64(request.size, "size", 2)?;
+        client
+            .limit_order()
+            .token_id(token_id)
+            .side(sdk_side(&request.side))
+            .price(price)
+            .size(size)
+            .order_type(order_type)
+            .build_sign_and_post(&signer)
+            .await
+    };
+
+    let response = order_result
         .map_err(|e| {
             error!(
                 raw_error = ?e,
