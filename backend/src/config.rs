@@ -76,6 +76,11 @@ pub struct Settings {
     pub llm_model: String,
     pub llm_report_dir: PathBuf,
     pub llm_code_patch_mode: String,
+
+    pub enable_hermes_market_reports: bool,
+    pub hermes_binary_path: String,
+    pub hermes_timeout_seconds: u64,
+    pub hermes_report_dir: PathBuf,
 }
 
 impl Settings {
@@ -153,6 +158,14 @@ impl Settings {
             llm_model: env_string("LLM_MODEL", ""),
             llm_report_dir: PathBuf::from(env_string("LLM_REPORT_DIR", "./data/llm-reports")),
             llm_code_patch_mode: env_string("LLM_CODE_PATCH_MODE", "proposal_only"),
+
+            enable_hermes_market_reports: env_bool("ENABLE_HERMES_MARKET_REPORTS", false),
+            hermes_binary_path: env_string("HERMES_BINARY_PATH", "hermes"),
+            hermes_timeout_seconds: env_parse("HERMES_TIMEOUT_SECONDS", 300)?,
+            hermes_report_dir: PathBuf::from(env_string(
+                "HERMES_REPORT_DIR",
+                "/var/lib/trading-bot/hermes-reports",
+            )),
         })
     }
 
@@ -291,6 +304,7 @@ impl Settings {
             enable_whale_detector = self.enable_whale_detector,
             whale_symbols = ?self.effective_whale_symbols(),
             enable_llm_market_reports = self.enable_llm_market_reports,
+            enable_hermes_market_reports = self.enable_hermes_market_reports,
             llm_model_configured = !self.llm_model.trim().is_empty(),
             llm_api_key_configured = self.llm_api_key.is_some(),
             llm_code_patch_mode = %self.llm_code_patch_mode,

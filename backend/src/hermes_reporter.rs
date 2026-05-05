@@ -7,11 +7,12 @@ use tracing::{info, warn};
 
 use crate::config::Settings;
 use crate::dashboard::WhaleSignal;
+use crate::llm::{
+    ClosedMarketReport, QUANT_REVIEW_SYSTEM_PROMPT, StrategyLearningContext, TradeExecutionReport,
+    quant_review_schema, sanitize_filename,
+};
 use crate::polymarket::{ClosedMarketSnapshot, MarketSnapshot};
 use crate::state::{BotOrder, BotPosition, BotState};
-use crate::llm::{
-    ClosedMarketReport, StrategyLearningContext, TradeExecutionReport, sanitize_filename,
-};
 
 #[derive(Clone)]
 pub struct HermesReporter {
@@ -38,13 +39,17 @@ impl HermesReporter {
         recent_whale_signals: Vec<WhaleSignal>,
     ) -> Result<bool> {
         let bot_positions: Vec<_> = state
-            .bot_positions.values()
+            .bot_positions
+            .values()
             .filter(|p| p.market_slug == observed_market.slug)
-            .cloned().collect();
+            .cloned()
+            .collect();
         let bot_orders: Vec<_> = state
-            .bot_orders.values()
+            .bot_orders
+            .values()
             .filter(|o| o.market_slug == observed_market.slug)
-            .cloned().collect();
+            .cloned()
+            .collect();
         self.report_closed_market_from_parts(
             settings,
             observed_market,
@@ -52,7 +57,8 @@ impl HermesReporter {
             &bot_positions,
             &bot_orders,
             &recent_whale_signals,
-        ).await
+        )
+        .await
     }
 
     /// Same as report_closed_market but takes pre-extracted positions/orders
@@ -93,7 +99,7 @@ impl HermesReporter {
                     "Any code patch must be reviewable and must not include secrets.".to_string(),
                 ],
                 code_change_policy: settings.llm_code_patch_mode.clone(),
-                requested_output_schema: serde_json::Value::Null,
+                requested_output_schema: quant_review_schema(),
             },
         };
 
@@ -118,7 +124,7 @@ impl HermesReporter {
     pub async fn report_trade_execution(
         &self,
         settings: &Settings,
-        execution: &TradeExecutionReport,
+        execution: TradeExecutionReport,
     ) -> Result<bool> {
         if !settings.enable_hermes_market_reports {
             return Ok(false);
@@ -155,12 +161,7 @@ impl HermesReporter {
 
         let output = tokio::time::timeout(timeout, async {
             tokio::process::Command::new(&self.binary_path)
-                .args([
-                    "chat",
-                    "-q",
-                    prompt,
-                    "-Q",
-                ])
+                .args(["chat", "-q", prompt, "-Q"])
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
@@ -197,79 +198,41 @@ impl HermesReporter {
 }
 
 fn build_closed_market_prompt(report_path: &PathBuf, market_slug: &str) -> String {
+    let response_path = paired_response_path(report_path, "-report.json", "-llm-response.json");
     format!(
-        "A 5-minute Polymarket crypto market has closed: {market_slug}\n\
-         \n\
-         Read the closed market report at: {report_path}\n\
-         \n\
-         Your task:\n\
-         1. Read the report file using read_file\n\
-         2. Analyze what happened: the bot's decisions, the market outcome, strategy performance\n\
-         3. Decide if changes are needed. Then act based on the change type:\n\
-         \n\
-         AUTONOMOUS (apply immediately, no waiting):\n\
-         - Runtime settings: POST to http://127.0.0.1:8787/api/settings for instant hot-reload\n\
-           Fields: dry_run, allow_live_buys, allow_live_sells, live_max_order_usd, snipe_max_position_usd\n\
-         - Strategy params in /opt/trading-bot/.env: edit with patch tool ONLY.\n\
-           Do NOT restart the bot — the .env changes will take effect on the next natural restart.\n\
-           Fields: SNIPE_MIN_EDGE, SNIPE_WINDOW_SECONDS, SNIPE_MAX_PRICE, SNIPE_MIN_VOLUME_USD,\n\
-           SNIPE_MIN_LIQUIDITY_USD, LIVE_ORDER_COOLDOWN_MS, POLL_INTERVAL_MS, etc.\n\
-         \n\
-         REVIEW (save as proposal, do NOT modify source code):\n\
-         - Any changes to backend/src/*.rs source code logic\n\
-         - Save review as JSON to /var/lib/trading-bot/hermes-reviews/<timestamp>-<slug>-review.json\n\
-           Format: {{\"market_slug\":\"...\", \"generated_at\":\"...\", \"summary\":\"...\",\n\
-           \"changes\":[{{\"file\":\"path\", \"description\":\"what to change\", \"reason\":\"why\"}}],\n\
-           \"parameter_suggestions\":[{{\"key\":\"ENV_VAR\", \"current\":\"val\", \"suggested\":\"val\"}}]}}\n\
-         \n\
-         Prefer parameter changes over code changes. They're safer and can be applied immediately.\n\
-         \n\
-         Context:\n\
-         - observed_market = what the bot saw while trading\n\
-         - final_market = the post-close/resolution snapshot\n\
-         - bot_positions/bot_orders = bot-owned state, not the whole wallet\n\
-         - recent_whale_signals = supporting context, not ground truth\n\
-         \n\
-         Safety rules (NEVER violate these):\n\
-         - Never disable safety checks or guardrails\n\
-         - Never remove dry-run protections\n\
-         - Never sell manual positions; only bot-owned positions\n\
-         - Never expose secrets, private keys, or wallet addresses\n\
-         - Prefer parameter adjustments (.env) over large code rewrites\n\
-         - Parameter changes go in backend/.env, code changes in backend/src/\n\
-         \n\
-         The codebase is at /root/lightweight_trading_bot_3 (Rust backend)\n\
-         The running bot dashboard is at http://127.0.0.1:8787\n\
-         \n\
-         You have full file-system access. Read the report, analyze it, and modify the bot if warranted.",
+        "{role}\n\nA 5-minute Polymarket crypto market has closed: {market_slug}\n\nRead the closed-market report with read_file: {report_path}\n\nAct as the bot's Quantitative Trader / Market Microstructure Analyst / Software Engineer. Your output is for the dashboard LLM Reviews panel, so write a concise JSON review to: {response_path}\n\nRequired workflow:\n1. Read the report file.\n2. Evaluate edge quality, entry timing, odds paid, Binance book/whale support, false-positive risk, fill/exit quality, and whether the bot should have traded, skipped, exited earlier, or held.\n3. Separate evidence from speculation. If data is missing, state the missing data and recommend instrumentation.\n4. Recommend measurable strategy changes only when evidence supports them. Prefer HOLD/NO_CHANGE when evidence is weak.\n5. Do not restart the bot. Do not change live permissions. Do not raise any order or position size above $1.\n6. If you actually change .env parameters, use patch only, keep $1 caps intact, and still save the JSON review. Source-code changes are proposal-only in code_patch_unified_diff.\n\nReturn/save JSON only with this schema:\n{schema}\n\nContext:\n- observed_market = what the bot saw while trading\n- final_market = post-close/resolution snapshot\n- bot_positions/bot_orders = bot-owned state, not whole wallet\n- recent_whale_signals = supporting context, not ground truth\n- codebase = /root/lightweight_trading_bot_3\n- dashboard = http://127.0.0.1:8787\n",
+        role = QUANT_REVIEW_SYSTEM_PROMPT,
         market_slug = market_slug,
-        report_path = report_path.display()
+        report_path = report_path.display(),
+        response_path = response_path.display(),
+        schema = serde_json::to_string_pretty(&quant_review_schema())
+            .unwrap_or_else(|_| "{}".to_string())
     )
 }
 
 fn build_trade_execution_prompt(report_path: &PathBuf, market_slug: &str) -> String {
+    let response_path = paired_response_path(
+        report_path,
+        "-trade-report.json",
+        "-trade-llm-response.json",
+    );
     format!(
-        "A trade execution event occurred in the Polymarket bot for market: {market_slug}\n\
-         \n\
-         Read the trade execution report at: {report_path}\n\
-         \n\
-         Your task:\n\
-         1. Read the report file using read_file\n\
-         2. Review the trade execution for strategy/safety signals\n\
-         3. Check if the execution was successful, if it made sense, and if any parameters should be tuned\n\
-         4. If changes are warranted, modify code or .env parameters\n\
-         \n\
-         Safety rules (NEVER violate these):\n\
-         - Never disable safety checks or guardrails\n\
-         - Never remove dry-run protections\n\
-         - Never expose secrets, private keys, or wallet addresses\n\
-         - Prefer parameter adjustments (.env) over large code rewrites\n\
-         \n\
-         The codebase is at /root/lightweight_trading_bot_3 (Rust backend)\n\
-         The running bot dashboard is at http://127.0.0.1:8787\n\
-         \n\
-         Take action if warranted — you have full access to analyze and modify the bot.",
+        "{role}\n\nA trade execution event occurred in the Polymarket bot for market: {market_slug}\n\nRead the trade execution report with read_file: {report_path}\n\nAct as the bot's Quantitative Trader / Market Microstructure Analyst / Software Engineer. Your output is for the dashboard LLM Reviews panel, so write a concise JSON review to: {response_path}\n\nRequired workflow:\n1. Read the report file.\n2. Evaluate execution quality, order reason, fill/rejection/timeout details, odds paid, phase quality, whale/book support, expected edge, and risk-control behavior.\n3. Decide if this points to a strategy edge, false positive, routing/fill-quality issue, exit issue, or instrumentation gap.\n4. Recommend measurable parameter/code changes only when evidence supports them. Prefer HOLD/NO_CHANGE when evidence is weak.\n5. Do not restart the bot. Do not change live permissions. Do not raise any order or position size above $1.\n6. If you actually change .env parameters, use patch only, keep $1 caps intact, and still save the JSON review. Source-code changes are proposal-only in code_patch_unified_diff.\n\nReturn/save JSON only with this schema:\n{schema}\n\nContext:\n- codebase = /root/lightweight_trading_bot_3\n- dashboard = http://127.0.0.1:8787\n",
+        role = QUANT_REVIEW_SYSTEM_PROMPT,
         market_slug = market_slug,
-        report_path = report_path.display()
+        report_path = report_path.display(),
+        response_path = response_path.display(),
+        schema = serde_json::to_string_pretty(&quant_review_schema())
+            .unwrap_or_else(|_| "{}".to_string())
+    )
+}
+
+fn paired_response_path(report_path: &PathBuf, suffix: &str, response_suffix: &str) -> PathBuf {
+    report_path.with_file_name(
+        report_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("hermes-report.json")
+            .replace(suffix, response_suffix),
     )
 }

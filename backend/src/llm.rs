@@ -10,7 +10,7 @@ use crate::dashboard::WhaleSignal;
 use crate::polymarket::{ClosedMarketSnapshot, MarketSnapshot};
 use crate::state::{BotOrder, BotPosition, BotState};
 
-const QUANT_REVIEW_SYSTEM_PROMPT: &str = r#"You are the bot's Quantitative Trader / Market Microstructure Analyst / Software Engineer.
+pub const QUANT_REVIEW_SYSTEM_PROMPT: &str = r#"You are the bot's Quantitative Trader / Market Microstructure Analyst / Software Engineer.
 
 Your job is to turn each closed-market or trade-execution report into practical strategy intelligence for a 5-minute Polymarket crypto bot.
 
@@ -36,7 +36,7 @@ Return JSON only. The frontend depends on these keys:
 - code_patch_unified_diff: optional string; empty string if no patch.
 "#;
 
-fn quant_review_schema() -> serde_json::Value {
+pub fn quant_review_schema() -> serde_json::Value {
     json!({
         "review_summary": "1-3 sentence summary of what should happen next",
         "intended_action": "NO_CHANGE | PARAMETER_TUNE | CODE_PATCH | INVESTIGATE | DISABLE_SIGNAL | ENABLE_SIGNAL",
@@ -361,7 +361,7 @@ fn build_prompt(report_json: &str) -> String {
     )
 }
 
-fn sanitize_filename(value: &str) -> String {
+pub fn sanitize_filename(value: &str) -> String {
     value
         .chars()
         .map(|ch| {

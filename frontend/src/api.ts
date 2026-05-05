@@ -27,13 +27,13 @@ export async function saveSettings(settings: RuntimeSettingsUpdate): Promise<{ o
 }
 
 export async function fetchHermesReports(): Promise<LlmReportListItem[]> {
-  const response = await fetch("/api/llm-reports");
-  if (!response.ok) throw new Error(`LLM reports request failed: ${response.status}`);
+  const response = await fetch("/api/hermes-reports");
+  if (!response.ok) throw new Error(`Hermes reports request failed: ${response.status}`);
   return response.json();
 }
 
 export async function fetchHermesReport(id: string): Promise<LlmReportDetailResponse> {
-  const response = await fetch(`/api/llm-reports/${encodeURIComponent(id)}`);
-  if (!response.ok) throw new Error(`LLM report request failed: ${response.status}`);
+  const response = await fetch(`/api/hermes-reports/${encodeURIComponent(id)}`);
+  if (!response.ok) throw new Error(`Hermes report request failed: ${response.status}`);
   return response.json();
 }

@@ -1,5 +1,6 @@
 mod config;
 mod dashboard;
+mod hermes_reporter;
 mod live;
 mod llm;
 mod polymarket;
@@ -18,11 +19,12 @@ use tracing::{error, info, warn};
 
 use crate::config::Settings;
 use crate::dashboard::{DashboardState, SharedDashboard, serve_dashboard};
+use crate::hermes_reporter::HermesReporter;
 use crate::live::{
     buy_request_from_snipe, cancel_live_order, fetch_wallet_snapshot, hide_stale_display_orders,
     post_live_order, redeem_winnings, sell_request_from_position,
 };
-use crate::llm::{LlmReporter, TradeExecutionReport};
+use crate::llm::TradeExecutionReport;
 use crate::polymarket::PolymarketClient;
 use crate::snipe::{WhaleContext, find_phase1_whale_ride_signals, find_phase2_snipe_signals};
 use crate::state::{BotState, now_ms};
@@ -132,7 +134,7 @@ async fn run_bot(
     let initial_settings = runtime_settings.read().await.clone();
     let mut state = BotState::load_or_default(&initial_settings.state_path).await?;
     let polymarket = PolymarketClient::new(&initial_settings)?;
-    let llm_reporter = LlmReporter::new();
+    let hermes_reporter = HermesReporter::new(&initial_settings);
     let mut last_seen_markets: HashMap<String, crate::polymarket::MarketSnapshot> = HashMap::new();
     let mut last_live_order_ms = 0_i64;
     let mut last_phase1_order_ms = 0_i64;
@@ -176,7 +178,7 @@ async fn run_bot(
                     for observed in closed_observed {
                         let whale_signals = dashboard_state.read().await.whale_signals.clone();
                         match polymarket.fetch_closed_market_snapshot(&observed).await {
-                            Ok(final_market) => match llm_reporter
+                            Ok(final_market) => match hermes_reporter
                                 .report_closed_market(
                                     &settings,
                                     observed.clone(),
@@ -389,7 +391,7 @@ async fn run_bot(
                                                 "Order Accepted",
                                                 Some(&request.market_slug),
                                             );
-                                            if let Err(error) = llm_reporter
+                                            if let Err(error) = hermes_reporter
                                                 .report_trade_execution(
                                                     &settings,
                                                     TradeExecutionReport {
@@ -421,7 +423,7 @@ async fn run_bot(
                                                 "Order Rejected",
                                                 Some(&format!("{:?}", response.raw)),
                                             );
-                                            if let Err(error) = llm_reporter
+                                            if let Err(error) = hermes_reporter
                                                 .report_trade_execution(
                                                     &settings,
                                                     TradeExecutionReport {
@@ -457,7 +459,7 @@ async fn run_bot(
                                                 "Trade Error",
                                                 Some(&error.to_string()),
                                             );
-                                            if let Err(report_error) = llm_reporter
+                                            if let Err(report_error) = hermes_reporter
                                                 .report_trade_execution(
                                                     &settings,
                                                     TradeExecutionReport {
@@ -488,7 +490,7 @@ async fn run_bot(
                                                 "Order Timeout",
                                                 Some(&request.market_slug),
                                             );
-                                            if let Err(report_error) = llm_reporter
+                                            if let Err(report_error) = hermes_reporter
                                                 .report_trade_execution(
                                                     &settings,
                                                     TradeExecutionReport {
@@ -680,7 +682,7 @@ async fn run_bot(
                                     )),
                                 );
                                 state.record_exit(&position.market_slug, &position.outcome);
-                                if let Err(error) = llm_reporter
+                                if let Err(error) = hermes_reporter
                                     .report_trade_execution(
                                         &settings,
                                         TradeExecutionReport {
@@ -705,7 +707,7 @@ async fn run_bot(
                             }
                             Ok(Ok(res)) => {
                                 warn!(raw = ?res.raw, "Whale exit failed: order not accepted");
-                                if let Err(error) = llm_reporter
+                                if let Err(error) = hermes_reporter
                                     .report_trade_execution(
                                         &settings,
                                         TradeExecutionReport {
@@ -731,7 +733,7 @@ async fn run_bot(
                             Ok(Err(e)) => {
                                 let err_str = e.to_string();
                                 warn!(error = %err_str, "Whale exit failed: execution error");
-                                if let Err(error) = llm_reporter
+                                if let Err(error) = hermes_reporter
                                     .report_trade_execution(
                                         &settings,
                                         TradeExecutionReport {

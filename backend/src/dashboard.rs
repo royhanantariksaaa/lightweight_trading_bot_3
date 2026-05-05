@@ -194,7 +194,7 @@ async fn status(State(context): State<DashboardContext>) -> Json<DashboardState>
 
 async fn list_llm_reports(State(context): State<DashboardContext>) -> Json<Vec<LlmReportListItem>> {
     let settings = context.settings.read().await.clone();
-    let mut items = fs::read_dir(&settings.llm_report_dir)
+    let mut items = fs::read_dir(&settings.hermes_report_dir)
         .ok()
         .into_iter()
         .flat_map(|entries| entries.filter_map(Result::ok))
@@ -208,7 +208,7 @@ async fn list_llm_reports(State(context): State<DashboardContext>) -> Json<Vec<L
                 .ok()
                 .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok());
             let response_path = settings
-                .llm_report_dir
+                .hermes_report_dir
                 .join(format!("{id}-llm-response.json"));
             let response_raw = fs::read_to_string(&response_path).ok();
             Some(LlmReportListItem {
@@ -249,7 +249,7 @@ async fn get_llm_report(
         return Json(serde_json::json!({ "ok": false, "error": "invalid report id" }));
     }
     let settings = context.settings.read().await.clone();
-    let report_path = settings.llm_report_dir.join(format!("{id}-report.json"));
+    let report_path = settings.hermes_report_dir.join(format!("{id}-report.json"));
     let report = match fs::read_to_string(&report_path)
         .ok()
         .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok())
@@ -259,7 +259,7 @@ async fn get_llm_report(
     };
     let response_raw = fs::read_to_string(
         settings
-            .llm_report_dir
+            .hermes_report_dir
             .join(format!("{id}-llm-response.json")),
     )
     .ok();
@@ -386,7 +386,7 @@ async fn update_settings(
             dashboard.llm_api_base = settings.llm_api_base.clone();
             dashboard.llm_api_key_configured = settings.llm_api_key.is_some();
             dashboard.llm_model = settings.llm_model.clone();
-            dashboard.llm_report_dir = settings.llm_report_dir.display().to_string();
+            dashboard.llm_report_dir = settings.hermes_report_dir.display().to_string();
             dashboard.llm_code_patch_mode = settings.llm_code_patch_mode.clone();
             dashboard.wallet = wallet;
             Json(serde_json::json!({ "ok": true }))
