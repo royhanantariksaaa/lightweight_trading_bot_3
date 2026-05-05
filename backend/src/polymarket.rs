@@ -118,7 +118,8 @@ impl PolymarketClient {
             )
             .await
             .with_context(|| format!("failed to fetch closed market {}", observed.slug))?;
-        self.closed_market_snapshot_from_gamma(market, observed).await
+        self.closed_market_snapshot_from_gamma(market, observed)
+            .await
     }
 
     async fn fetch_active_5m_markets_by_slug(
@@ -326,9 +327,13 @@ impl PolymarketClient {
     ) -> Result<ClosedMarketSnapshot> {
         let slug = market.slug.unwrap_or_else(|| observed.slug.clone());
         let question = market.question.unwrap_or_else(|| observed.question.clone());
-        let outcome_names = market
-            .outcomes
-            .unwrap_or_else(|| observed.outcomes.iter().map(|outcome| outcome.name.clone()).collect());
+        let outcome_names = market.outcomes.unwrap_or_else(|| {
+            observed
+                .outcomes
+                .iter()
+                .map(|outcome| outcome.name.clone())
+                .collect()
+        });
         let prices = market.outcome_prices.unwrap_or_default();
         let token_ids = market.clob_token_ids.unwrap_or_default();
         let outcomes = outcome_names
@@ -336,17 +341,25 @@ impl PolymarketClient {
             .enumerate()
             .map(|(idx, name)| OutcomeSnapshot {
                 name,
-                token_id: token_ids
-                    .get(idx)
-                    .map(ToString::to_string)
-                    .or_else(|| observed.outcomes.get(idx).and_then(|outcome| outcome.token_id.clone())),
+                token_id: token_ids.get(idx).map(ToString::to_string).or_else(|| {
+                    observed
+                        .outcomes
+                        .get(idx)
+                        .and_then(|outcome| outcome.token_id.clone())
+                }),
                 price: prices
                     .get(idx)
                     .map(decimal_to_f64)
                     .or_else(|| observed.outcomes.get(idx).map(|outcome| outcome.price))
                     .unwrap_or(0.0),
-                best_bid: observed.outcomes.get(idx).and_then(|outcome| outcome.best_bid),
-                best_ask: observed.outcomes.get(idx).and_then(|outcome| outcome.best_ask),
+                best_bid: observed
+                    .outcomes
+                    .get(idx)
+                    .and_then(|outcome| outcome.best_bid),
+                best_ask: observed
+                    .outcomes
+                    .get(idx)
+                    .and_then(|outcome| outcome.best_ask),
             })
             .collect::<Vec<_>>();
         let inferred_winner = outcomes
@@ -378,7 +391,11 @@ impl PolymarketClient {
                 .map(|value| decimal_to_f64(&value))
                 .unwrap_or(observed.liquidity),
             price_to_beat: observed.price_to_beat,
-            final_reference_price: self.fetch_chainlink_live_price(&symbol).await.ok().flatten(),
+            final_reference_price: self
+                .fetch_chainlink_live_price(&symbol)
+                .await
+                .ok()
+                .flatten(),
         })
     }
 }

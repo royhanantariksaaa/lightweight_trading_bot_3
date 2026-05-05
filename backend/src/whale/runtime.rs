@@ -50,20 +50,32 @@ pub async fn run_whale_detector(settings: Settings, dashboard: SharedDashboard) 
         match event {
             StreamEvent::BookTicker(book) => update_book_ticker(&mut state, book),
             StreamEvent::Depth(depth) => {
-                let symbol_from_stream = crate::whale::util::symbol_from_stream(&stream).to_ascii_uppercase();
+                let symbol_from_stream =
+                    crate::whale::util::symbol_from_stream(&stream).to_ascii_uppercase();
                 update_orderbook(&mut state, &stream, depth);
                 if let Some(price) = state.prices.get(&symbol_from_stream).map(|p| p.mid) {
                     if let Some(book) = state.books.get(&symbol_from_stream) {
-                        if let Some(metrics) = crate::whale::book::calculate_book_metrics(&settings, &market, price, book, &state) {
+                        if let Some(metrics) = crate::whale::book::calculate_book_metrics(
+                            &settings, &market, price, book, &state,
+                        ) {
                             let mut d = dashboard.write().await;
-                            d.binance_books.insert(symbol_from_stream.clone(), BinanceBookInfo {
-                                symbol: symbol_from_stream,
-                                imbalance_pct: metrics.imbalance_pct,
-                                bid_wall: metrics.largest_bid_wall.map(|w| WhaleWallInfo { price: w.price, notional_usd: w.notional_usd }),
-                                ask_wall: metrics.largest_ask_wall.map(|w| WhaleWallInfo { price: w.price, notional_usd: w.notional_usd }),
-                                need_up_10: metrics.need_up_10,
-                                need_down_10: metrics.need_down_10,
-                            });
+                            d.binance_books.insert(
+                                symbol_from_stream.clone(),
+                                BinanceBookInfo {
+                                    symbol: symbol_from_stream,
+                                    imbalance_pct: metrics.imbalance_pct,
+                                    bid_wall: metrics.largest_bid_wall.map(|w| WhaleWallInfo {
+                                        price: w.price,
+                                        notional_usd: w.notional_usd,
+                                    }),
+                                    ask_wall: metrics.largest_ask_wall.map(|w| WhaleWallInfo {
+                                        price: w.price,
+                                        notional_usd: w.notional_usd,
+                                    }),
+                                    need_up_10: metrics.need_up_10,
+                                    need_down_10: metrics.need_down_10,
+                                },
+                            );
                         }
                     }
                 }
@@ -75,7 +87,7 @@ pub async fn run_whale_detector(settings: Settings, dashboard: SharedDashboard) 
                     let mut dashboard = dashboard.write().await;
                     dashboard.whale_signals = recent_signals.iter().cloned().collect();
                     dashboard.latest_whale_signal = Some(signal);
-                    
+
                     let whale_ctx = crate::snipe::WhaleContext {
                         signals: dashboard.whale_signals.clone(),
                         binance_books: dashboard.binance_books.clone(),

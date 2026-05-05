@@ -1,12 +1,12 @@
 use anyhow::{Context, Result, anyhow, bail};
 use polymarket_client_sdk_v2::auth::{LocalSigner, Normal, Signer as _};
-use tracing::{error, warn};
 use polymarket_client_sdk_v2::clob::types::request::{BalanceAllowanceRequest, OrdersRequest};
 use polymarket_client_sdk_v2::clob::types::{AssetType, OrderType, Side, SignatureType};
 use polymarket_client_sdk_v2::clob::{Client as ClobClient, Config as ClobConfig};
 use polymarket_client_sdk_v2::types::{Address, Decimal, U256};
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
+use tracing::{error, warn};
 
 use crate::config::Settings;
 use crate::polymarket::MarketSnapshot;
@@ -439,11 +439,11 @@ pub async fn redeem_winnings(settings: &Settings) -> Result<()> {
         .polymarket_private_key
         .as_deref()
         .context("POLYMARKET_PRIVATE_KEY required for redeem")?;
-    
+
     // TODO: The 0.6.0-canary SDK seems to have moved the redeem method or uses a different builder.
     // client.redeem().await.context("failed to redeem winnings")?;
     warn!("Auto-redeem is not yet fully implemented for this SDK version");
-    
+
     Ok(())
 }
 
@@ -462,7 +462,7 @@ fn decimal_from_f64(value: f64, label: &str, decimals: usize) -> Result<Decimal>
     if !value.is_finite() {
         bail!("invalid live order {label} {value}");
     }
-    // We format to the max decimals but then trim the string if it's something like "0.740" 
+    // We format to the max decimals but then trim the string if it's something like "0.740"
     // to avoid strict tick size validation errors on some markets.
     let s = format!("{value:.decimals$}");
     let trimmed = if s.contains('.') {
@@ -471,7 +471,7 @@ fn decimal_from_f64(value: f64, label: &str, decimals: usize) -> Result<Decimal>
     } else {
         &s
     };
-    
+
     Decimal::from_str(trimmed)
         .with_context(|| format!("failed to convert live order {label}={value} to Decimal"))
 }
@@ -525,8 +525,8 @@ fn guarded_request(
     let mut size = size;
     let mut amount_usd = price * size;
 
-    let is_fak = settings.live_order_type.trim().eq_ignore_ascii_case("FAK") ||
-        settings.live_order_type.trim().eq_ignore_ascii_case("FOK");
+    let is_fak = settings.live_order_type.trim().eq_ignore_ascii_case("FAK")
+        || settings.live_order_type.trim().eq_ignore_ascii_case("FOK");
 
     // For FAK/FOK buys, check LIVE_MAX against the original intended amount BEFORE
     // decimal compliance adjustment. The compliance bump is a mandatory API requirement

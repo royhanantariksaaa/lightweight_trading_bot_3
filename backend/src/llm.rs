@@ -84,7 +84,9 @@ impl LlmReporter {
             return Ok(false);
         }
         let Some(api_key) = settings.llm_api_key.as_deref() else {
-            bail!("LLM reporting enabled but LLM_API_KEY/OPENAI_API_KEY/DEEPSEEK_API_KEY is missing");
+            bail!(
+                "LLM reporting enabled but LLM_API_KEY/OPENAI_API_KEY/DEEPSEEK_API_KEY is missing"
+            );
         };
         if settings.llm_model.trim().is_empty() {
             bail!("LLM reporting enabled but LLM_MODEL is empty");
@@ -205,7 +207,9 @@ impl LlmReporter {
             return Ok(false);
         }
         let Some(api_key) = settings.llm_api_key.as_deref() else {
-            bail!("LLM reporting enabled but LLM_API_KEY/OPENAI_API_KEY/DEEPSEEK_API_KEY is missing");
+            bail!(
+                "LLM reporting enabled but LLM_API_KEY/OPENAI_API_KEY/DEEPSEEK_API_KEY is missing"
+            );
         };
         if settings.llm_model.trim().is_empty() {
             bail!("LLM reporting enabled but LLM_MODEL is empty");

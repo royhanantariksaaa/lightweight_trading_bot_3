@@ -181,15 +181,24 @@ fn pick_phase1_outcome(
         .outcomes
         .iter()
         .find(|o| o.name.eq_ignore_ascii_case(target_outcome_name))?;
-    let buy_price = outcome.best_ask.or(outcome.best_bid).unwrap_or(outcome.price);
+    let buy_price = outcome
+        .best_ask
+        .or(outcome.best_bid)
+        .unwrap_or(outcome.price);
     if buy_price <= 0.0 || buy_price > 0.85 {
         return None;
     }
 
-    let whale_alignment = if going_up { whale_bias.max(0.0) } else { (-whale_bias).max(0.0) };
+    let whale_alignment = if going_up {
+        whale_bias.max(0.0)
+    } else {
+        (-whale_bias).max(0.0)
+    };
     let book_strength = (imbalance.abs() / threshold.max(0.01)).clamp(0.0, 2.0) / 2.0;
-    let liquidity_quality = ((market.volume + market.liquidity) / settings.snipe_liquidity_scale_usd).clamp(0.0, 1.0);
-    let confidence = (0.55 * book_strength + 0.25 * whale_alignment + 0.20 * liquidity_quality).clamp(0.0, 1.0);
+    let liquidity_quality =
+        ((market.volume + market.liquidity) / settings.snipe_liquidity_scale_usd).clamp(0.0, 1.0);
+    let confidence =
+        (0.55 * book_strength + 0.25 * whale_alignment + 0.20 * liquidity_quality).clamp(0.0, 1.0);
     if confidence < 0.45 {
         return None;
     }
@@ -231,7 +240,9 @@ fn pick_phase2_outcome(
 ) -> Option<SnipeSignal> {
     let symbol = extract_symbol(&market.slug);
     let (going_up, price_delta_pct) = match (market.price_to_beat, market.current_price) {
-        (Some(price_to_beat), Some(current_price)) if price_to_beat > 0.0 && current_price > 0.0 => {
+        (Some(price_to_beat), Some(current_price))
+            if price_to_beat > 0.0 && current_price > 0.0 =>
+        {
             let delta = (current_price - price_to_beat) / price_to_beat;
             if delta.abs() < settings.snipe_min_price_delta_pct {
                 return None;
@@ -246,7 +257,10 @@ fn pick_phase2_outcome(
         .outcomes
         .iter()
         .find(|o| o.name.eq_ignore_ascii_case(target_outcome_name))?;
-    let buy_price = outcome.best_ask.or(outcome.best_bid).unwrap_or(outcome.price);
+    let buy_price = outcome
+        .best_ask
+        .or(outcome.best_bid)
+        .unwrap_or(outcome.price);
     if buy_price <= 0.0 || buy_price > settings.snipe_max_price {
         return None;
     }
@@ -255,8 +269,13 @@ fn pick_phase2_outcome(
     let momentum = price_delta_pct.abs().clamp(0.0, 0.02) / 0.02;
     let time_pressure = 1.0
         - (market.seconds_to_expiry as f64 / settings.snipe_window_seconds as f64).clamp(0.0, 1.0);
-    let liquidity_quality = ((market.volume + market.liquidity) / settings.snipe_liquidity_scale_usd).clamp(0.0, 1.0);
-    let whale_alignment = if going_up { whale_bias.max(0.0) } else { (-whale_bias).max(0.0) };
+    let liquidity_quality =
+        ((market.volume + market.liquidity) / settings.snipe_liquidity_scale_usd).clamp(0.0, 1.0);
+    let whale_alignment = if going_up {
+        whale_bias.max(0.0)
+    } else {
+        (-whale_bias).max(0.0)
+    };
     let winner_clarity = ((buy_price - 0.50).abs() / 0.40).clamp(0.0, 1.0);
     let confidence = (0.25 * momentum
         + 0.20 * time_pressure
@@ -266,7 +285,11 @@ fn pick_phase2_outcome(
         .clamp(0.0, 1.0);
 
     let hail_mary = market.seconds_to_expiry <= settings.phase2_hail_mary_seconds;
-    let min_edge = if hail_mary { (settings.snipe_min_edge * 0.5).max(0.005) } else { settings.snipe_min_edge };
+    let min_edge = if hail_mary {
+        (settings.snipe_min_edge * 0.5).max(0.005)
+    } else {
+        settings.snipe_min_edge
+    };
     let expected_edge = confidence - (buy_price - 0.5).max(0.0);
     if !hail_mary && confidence < 0.45 {
         return None;
@@ -308,8 +331,14 @@ fn pick_phase2_outcome(
 }
 
 fn implied_direction_from_outcomes(market: &MarketSnapshot) -> Option<(bool, f64)> {
-    let up = market.outcomes.iter().find(|o| o.name.eq_ignore_ascii_case("Up"))?;
-    let down = market.outcomes.iter().find(|o| o.name.eq_ignore_ascii_case("Down"))?;
+    let up = market
+        .outcomes
+        .iter()
+        .find(|o| o.name.eq_ignore_ascii_case("Up"))?;
+    let down = market
+        .outcomes
+        .iter()
+        .find(|o| o.name.eq_ignore_ascii_case("Down"))?;
     let up_price = up.best_ask.or(up.best_bid).unwrap_or(up.price);
     let down_price = down.best_ask.or(down.best_bid).unwrap_or(down.price);
     if up_price <= 0.0 || down_price <= 0.0 || (up_price - down_price).abs() < 0.01 {
@@ -321,12 +350,11 @@ fn implied_direction_from_outcomes(market: &MarketSnapshot) -> Option<(bool, f64
 fn resolve_binance_key(symbol: &str, books: &HashMap<String, BinanceBookInfo>) -> Option<String> {
     let upper = symbol.to_ascii_uppercase();
     let candidates = [upper.clone(), format!("{}USDT", upper)];
-    candidates.into_iter().find(|candidate| books.contains_key(candidate))
+    candidates
+        .into_iter()
+        .find(|candidate| books.contains_key(candidate))
 }
 
 fn extract_symbol(slug: &str) -> String {
-    slug.split('-')
-        .next()
-        .unwrap_or("")
-        .to_ascii_uppercase()
+    slug.split('-').next().unwrap_or("").to_ascii_uppercase()
 }
