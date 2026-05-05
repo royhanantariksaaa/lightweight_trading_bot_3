@@ -56,7 +56,7 @@ async fn main() -> Result<()> {
         llm_api_base: settings.llm_api_base.clone(),
         llm_api_key_configured: settings.llm_api_key.is_some(),
         llm_model: settings.llm_model.clone(),
-        llm_report_dir: settings.llm_report_dir.display().to_string(),
+        llm_report_dir: settings.hermes_report_dir.display().to_string(),
         llm_code_patch_mode: settings.llm_code_patch_mode.clone(),
         active_symbols: settings.active_symbols.clone(),
         ..DashboardState::default()
