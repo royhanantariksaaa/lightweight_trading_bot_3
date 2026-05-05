@@ -349,6 +349,34 @@ async fn run_bot(
                                     );
                                     drop(d);
 
+                                    let optimistic_order_id = format!("optimistic-{}", now_ms());
+                                    state.record_bot_order_with_id(
+                                        optimistic_order_id.clone(),
+                                        signal.market_slug.clone(),
+                                        signal.outcome.clone(),
+                                        signal.price,
+                                        request.size,
+                                        Some(signal.phase.clone()),
+                                    );
+                                    state.record_optimistic_position_with_phase(
+                                        signal.market_slug.clone(),
+                                        signal.outcome.clone(),
+                                        signal.price,
+                                        request.size,
+                                        Some(signal.phase.clone()),
+                                    );
+                                    if let Err(error) = state.save(&settings.state_path).await {
+                                        warn!(%error, "failed to persist optimistic buy order state");
+                                    }
+                                    dashboard_state.write().await.push_activity(
+                                        "info",
+                                        "Optimistic Buy Tracked",
+                                        Some(&format!(
+                                            "{} {} while awaiting Polymarket confirmation",
+                                            signal.outcome, signal.market_slug
+                                        )),
+                                    );
+
                                     match tokio::time::timeout(
                                         Duration::from_secs(15),
                                         post_live_order(&settings, &request),
@@ -359,39 +387,15 @@ async fn run_bot(
                                             let order_id = response
                                                 .order_id
                                                 .unwrap_or_else(|| format!("clob-{}", now_ms()));
-                                            state.record_bot_order_with_id(
+                                            state.replace_order_id(
+                                                &optimistic_order_id,
                                                 order_id.clone(),
-                                                signal.market_slug.clone(),
-                                                signal.outcome.clone(),
-                                                signal.price,
-                                                request.size,
-                                                Some(signal.phase.clone()),
+                                            );
+                                            state.confirm_position(
+                                                &signal.market_slug,
+                                                &signal.outcome,
                                             );
                                             if response_filled_immediately(&response.raw) {
-                                                if state.bot_owns_position(
-                                                    &signal.market_slug,
-                                                    &signal.outcome,
-                                                ) {
-                                                    info!(
-                                                        ?signal,
-                                                        "AVERAGING DOWN: Adding to existing position"
-                                                    );
-                                                    state.record_position_addition(
-                                                        &signal.market_slug,
-                                                        &signal.outcome,
-                                                        signal.price,
-                                                        request.size,
-                                                        Some(signal.phase.clone()),
-                                                    );
-                                                } else {
-                                                    state.record_position_with_phase(
-                                                        signal.market_slug.clone(),
-                                                        signal.outcome.clone(),
-                                                        signal.price,
-                                                        request.size,
-                                                        Some(signal.phase.clone()),
-                                                    );
-                                                }
                                                 state.mark_order_resolved(&order_id);
                                             }
                                             if let Err(error) =
@@ -437,6 +441,16 @@ async fn run_bot(
                                         }
                                         Ok(Ok(response)) => {
                                             warn!(?request, raw = ?response.raw, "Polymarket CLOB V2 order was not accepted");
+                                            state.mark_order_cancelled(&optimistic_order_id);
+                                            state.remove_optimistic_position(
+                                                &signal.market_slug,
+                                                &signal.outcome,
+                                            );
+                                            if let Err(error) =
+                                                state.save(&settings.state_path).await
+                                            {
+                                                warn!(%error, "failed to persist rejected optimistic buy rollback");
+                                            }
                                             dashboard_state.write().await.push_activity(
                                                 "error",
                                                 "Order Rejected",
@@ -474,6 +488,16 @@ async fn run_bot(
                                                 ?error,
                                                 "ERROR: failed to place live Polymarket CLOB V2 order"
                                             );
+                                            state.mark_order_cancelled(&optimistic_order_id);
+                                            state.remove_optimistic_position(
+                                                &signal.market_slug,
+                                                &signal.outcome,
+                                            );
+                                            if let Err(save_error) =
+                                                state.save(&settings.state_path).await
+                                            {
+                                                warn!(%save_error, "failed to persist failed optimistic buy rollback");
+                                            }
                                             dashboard_state.write().await.push_activity(
                                                 "error",
                                                 "Trade Error",

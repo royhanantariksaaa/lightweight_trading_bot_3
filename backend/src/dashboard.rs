@@ -112,6 +112,16 @@ pub struct BinanceBookInfo {
     pub ask_wall: Option<WhaleWallInfo>,
     pub need_up_10: f64,
     pub need_down_10: f64,
+    #[serde(default)]
+    pub imbalance_history: Vec<ImbalanceSample>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ImbalanceSample {
+    pub timestamp_ms: i64,
+    pub imbalance_pct: f64,
+    pub need_up_10: f64,
+    pub need_down_10: f64,
 }
 
 #[derive(Clone, Debug, Deserialize)]

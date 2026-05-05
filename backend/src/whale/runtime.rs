@@ -6,7 +6,9 @@ use tokio_tungstenite::connect_async;
 use tracing::{info, warn};
 
 use crate::config::Settings;
-use crate::dashboard::{BinanceBookInfo, SharedDashboard, WhaleSignal, WhaleWallInfo};
+use crate::dashboard::{
+    BinanceBookInfo, ImbalanceSample, SharedDashboard, WhaleSignal, WhaleWallInfo,
+};
 use crate::state::now_ms;
 
 use super::PRE_WHALE_LOOKBACK_MS;
@@ -59,6 +61,23 @@ pub async fn run_whale_detector(settings: Settings, dashboard: SharedDashboard) 
                             &settings, &market, price, book, &state,
                         ) {
                             let mut d = dashboard.write().await;
+                            let now = now_ms();
+                            let mut imbalance_history = d
+                                .binance_books
+                                .get(&symbol_from_stream)
+                                .map(|book| book.imbalance_history.clone())
+                                .unwrap_or_default();
+                            imbalance_history.push(ImbalanceSample {
+                                timestamp_ms: now,
+                                imbalance_pct: metrics.imbalance_pct,
+                                need_up_10: metrics.need_up_10,
+                                need_down_10: metrics.need_down_10,
+                            });
+                            imbalance_history.retain(|sample| now - sample.timestamp_ms <= 20_000);
+                            if imbalance_history.len() > 12 {
+                                let drain_count = imbalance_history.len() - 12;
+                                imbalance_history.drain(0..drain_count);
+                            }
                             d.binance_books.insert(
                                 symbol_from_stream.clone(),
                                 BinanceBookInfo {
@@ -74,6 +93,7 @@ pub async fn run_whale_detector(settings: Settings, dashboard: SharedDashboard) 
                                     }),
                                     need_up_10: metrics.need_up_10,
                                     need_down_10: metrics.need_down_10,
+                                    imbalance_history,
                                 },
                             );
                         }

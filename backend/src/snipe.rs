@@ -5,6 +5,11 @@ use crate::config::Settings;
 use crate::dashboard::{BinanceBookInfo, WhaleSignal};
 use crate::polymarket::MarketSnapshot;
 
+const PHASE1_MOMENTUM_MIN_ABS_IMBALANCE: f64 = 0.12;
+const PHASE1_MOMENTUM_MIN_DELTA: f64 = 0.08;
+const PHASE1_MOMENTUM_MIN_SAMPLES: usize = 3;
+const PHASE1_MOMENTUM_MAX_REVERSALS: usize = 1;
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SnipeSignal {
     pub market_slug: String,
@@ -84,6 +89,15 @@ impl WhaleContext {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+struct ImbalanceMomentum {
+    going_up: bool,
+    current_abs: f64,
+    delta_abs: f64,
+    samples: usize,
+    reversals: usize,
+}
+
 pub fn find_phase1_whale_ride_signals(
     settings: &Settings,
     markets: &[MarketSnapshot],
@@ -160,10 +174,28 @@ fn pick_phase1_outcome(
     let imbalance = book.imbalance_pct / 100.0;
     let threshold = settings.phase1_imbalance_threshold.abs();
 
-    let going_up = if imbalance >= threshold {
-        true
+    let momentum = detect_imbalance_momentum(book);
+    let (going_up, trigger_label, momentum_score, momentum_detail) = if imbalance >= threshold {
+        (true, "hard-imbalance", 0.0, String::new())
     } else if imbalance <= -threshold {
-        false
+        (false, "hard-imbalance", 0.0, String::new())
+    } else if let Some(momentum) = momentum {
+        let score = ((momentum.current_abs / threshold.max(0.01)) * 0.55
+            + (momentum.delta_abs / threshold.max(0.01)) * 0.35
+            + (1.0 - momentum.reversals as f64 * 0.25) * 0.10)
+            .clamp(0.0, 1.0);
+        (
+            momentum.going_up,
+            "imbalance-momentum",
+            score,
+            format!(
+                " momentum_abs={:.1}% momentum_delta={:+.1}% samples={} reversals={}",
+                momentum.current_abs * 100.0,
+                momentum.delta_abs * 100.0,
+                momentum.samples,
+                momentum.reversals
+            ),
+        )
     } else {
         return None;
     };
@@ -213,7 +245,8 @@ fn pick_phase1_outcome(
     } else {
         (-whale_bias).max(0.0)
     };
-    let book_strength = (imbalance.abs() / threshold.max(0.01)).clamp(0.0, 2.0) / 2.0;
+    let book_strength =
+        ((imbalance.abs() / threshold.max(0.01)).clamp(0.0, 2.0) / 2.0).max(momentum_score);
     let liquidity_quality =
         ((market.volume + market.liquidity) / settings.snipe_liquidity_scale_usd).clamp(0.0, 1.0);
     let confidence =
@@ -239,17 +272,83 @@ fn pick_phase1_outcome(
         liquidity: market.liquidity,
         stake_usd,
         reason: format!(
-            "phase1-whale: {} {} imbalance={:+.1}% whale_bias={:+.2} ref_delta={:+.4}% conf={:.3} tte={}s",
+            "phase1-whale: {} {} trigger={} imbalance={:+.1}% whale_bias={:+.2} ref_delta={:+.4}% conf={:.3} tte={}s{}",
             target_outcome_name,
             symbol,
+            trigger_label,
             book.imbalance_pct,
             whale_bias,
             price_delta_pct * 100.0,
             confidence,
             market.seconds_to_expiry,
+            momentum_detail,
         ),
         dry_run: settings.dry_run || !settings.allow_live_buys,
         phase: "phase1".to_string(),
+    })
+}
+
+fn detect_imbalance_momentum(book: &BinanceBookInfo) -> Option<ImbalanceMomentum> {
+    let history = &book.imbalance_history;
+    if history.len() < PHASE1_MOMENTUM_MIN_SAMPLES {
+        return None;
+    }
+
+    let samples: Vec<f64> = history
+        .iter()
+        .rev()
+        .take(6)
+        .map(|sample| sample.imbalance_pct / 100.0)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    if samples.len() < PHASE1_MOMENTUM_MIN_SAMPLES {
+        return None;
+    }
+
+    let first = *samples.first()?;
+    let last = *samples.last()?;
+    let going_up = last > 0.0;
+    if first.abs() > 0.02 && going_up != (first > 0.0) {
+        return None;
+    }
+
+    let current_abs = last.abs();
+    let delta_abs = current_abs - first.abs();
+    if current_abs < PHASE1_MOMENTUM_MIN_ABS_IMBALANCE || delta_abs < PHASE1_MOMENTUM_MIN_DELTA {
+        return None;
+    }
+
+    let mut same_direction_samples = 0;
+    let mut reversals = 0;
+    let mut improving_steps = 0;
+    for window in samples.windows(2) {
+        let prev = window[0];
+        let curr = window[1];
+        if (curr > 0.0) == going_up {
+            same_direction_samples += 1;
+        }
+        if curr.abs() + 0.005 >= prev.abs() {
+            improving_steps += 1;
+        } else {
+            reversals += 1;
+        }
+    }
+
+    if same_direction_samples < PHASE1_MOMENTUM_MIN_SAMPLES - 1
+        || improving_steps < PHASE1_MOMENTUM_MIN_SAMPLES - 1
+        || reversals > PHASE1_MOMENTUM_MAX_REVERSALS
+    {
+        return None;
+    }
+
+    Some(ImbalanceMomentum {
+        going_up,
+        current_abs,
+        delta_abs,
+        samples: samples.len(),
+        reversals,
     })
 }
 

@@ -43,6 +43,8 @@ pub struct BotPosition {
     pub opened_at_ms: i64,
     #[serde(default)]
     pub last_buy_at_ms: i64,
+    #[serde(default)]
+    pub confirmation_status: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -169,8 +171,64 @@ impl BotState {
                 total_cost_usd: cost,
                 opened_at_ms: now_ms(),
                 last_buy_at_ms: now_ms(),
+                confirmation_status: None,
             },
         );
+    }
+
+    pub fn record_optimistic_position_with_phase(
+        &mut self,
+        market_slug: String,
+        outcome: String,
+        entry_price: f64,
+        shares: f64,
+        phase: Option<String>,
+    ) {
+        self.record_position_with_phase(
+            market_slug.clone(),
+            outcome.clone(),
+            entry_price,
+            shares,
+            phase,
+        );
+        if let Some(position) = self
+            .bot_positions
+            .get_mut(&position_key(&market_slug, &outcome))
+        {
+            position.confirmation_status = Some("pending_exchange_confirmation".to_string());
+        }
+    }
+
+    pub fn confirm_position(&mut self, market_slug: &str, outcome: &str) {
+        if let Some(position) = self
+            .bot_positions
+            .get_mut(&position_key(market_slug, outcome))
+        {
+            position.confirmation_status = Some("confirmed".to_string());
+        }
+    }
+
+    pub fn remove_optimistic_position(&mut self, market_slug: &str, outcome: &str) -> bool {
+        let key = position_key(market_slug, outcome);
+        let should_remove = self
+            .bot_positions
+            .get(&key)
+            .and_then(|position| position.confirmation_status.as_deref())
+            == Some("pending_exchange_confirmation");
+        if should_remove {
+            self.bot_positions.remove(&key);
+        }
+        should_remove
+    }
+
+    pub fn replace_order_id(&mut self, old_id: &str, new_id: String) {
+        if old_id == new_id {
+            return;
+        }
+        if let Some(mut order) = self.bot_orders.remove(old_id) {
+            order.id = new_id.clone();
+            self.bot_orders.insert(new_id, order);
+        }
     }
 
     pub fn record_position_addition(
