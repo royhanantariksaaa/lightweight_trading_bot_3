@@ -345,6 +345,13 @@ async fn run_bot(
                             && now_ms() - last_live_order_ms < settings.live_order_cooldown_ms
                         {
                             info!(?signal, "phase2 cooldown active: skipping candidate");
+                        } else if state.bot_owns_any_position(&signal.market_slug) {
+                            info!(
+                                ?signal,
+                                "already own position in this market: skipping candidate"
+                            );
+                        } else if state.recently_exited_any(&signal.market_slug, 30_000) {
+                            info!(?signal, "recently exited this market: skipping candidate");
                         } else {
                             if let Some(exit_ms) =
                                 state.recent_exit_ms(&signal.market_slug, &signal.outcome)

@@ -284,6 +284,19 @@ impl BotState {
             .contains_key(&position_key(market_slug, outcome))
     }
 
+    pub fn bot_owns_any_position(&self, market_slug: &str) -> bool {
+        self.bot_positions
+            .keys()
+            .any(|key| key.starts_with(market_slug))
+    }
+
+    pub fn recently_exited_any(&self, market_slug: &str, within_ms: i64) -> bool {
+        let cutoff = now_ms() - within_ms;
+        self.recent_exits
+            .iter()
+            .any(|(key, &exit_ms)| key.starts_with(market_slug) && exit_ms > cutoff)
+    }
+
     pub fn recent_exit_ms(&self, market_slug: &str, outcome: &str) -> Option<i64> {
         self.recent_exits
             .get(&position_key(market_slug, outcome))
