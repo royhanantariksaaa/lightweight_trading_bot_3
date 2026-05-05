@@ -296,6 +296,9 @@ async fn run_bot(
                                 phase,
                             );
                             state.mark_order_resolved(&order_id);
+                            if let Err(error) = state.save(&settings.state_path).await {
+                                warn!(%error, "failed to immediately persist GTC fill position");
+                            }
                         }
                     }
                     for signal in &signals {
@@ -390,6 +393,11 @@ async fn run_bot(
                                                     );
                                                 }
                                                 state.mark_order_resolved(&order_id);
+                                            }
+                                            if let Err(error) =
+                                                state.save(&settings.state_path).await
+                                            {
+                                                warn!(%error, "failed to immediately persist accepted buy order state");
                                             }
                                             last_live_order_ms = now_ms();
                                             if signal.phase == "phase1" {
