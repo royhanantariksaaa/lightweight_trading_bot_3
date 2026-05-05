@@ -20,9 +20,22 @@ pub struct WalletSnapshot {
     pub position_value: Option<f64>,
     pub portfolio_value: Option<f64>,
     pub positions_count: usize,
+    pub positions: Vec<WalletPositionSnapshot>,
     pub open_orders: Vec<OpenOrderSnapshot>,
     pub updated_at: String,
     pub error: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct WalletPositionSnapshot {
+    pub market_slug: String,
+    pub outcome: String,
+    pub asset: Option<String>,
+    pub size: f64,
+    pub avg_price: f64,
+    pub cur_price: f64,
+    pub current_value: f64,
+    pub redeemable: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -307,7 +320,8 @@ async fn try_fetch_wallet_snapshot(
         allowance,
         position_value: Some(positions.position_value),
         portfolio_value: Some(cash + positions.position_value),
-        positions_count: positions.positions_count,
+        positions_count: positions.positions.len(),
+        positions: positions.positions,
         open_orders,
         updated_at,
         error: None,
@@ -358,7 +372,7 @@ fn wallet_address_for_profile(settings: &Settings, signer_address: String) -> St
 #[derive(Default)]
 struct PositionTotals {
     position_value: f64,
-    positions_count: usize,
+    positions: Vec<WalletPositionSnapshot>,
 }
 
 async fn fetch_position_value(address: &str) -> Result<PositionTotals> {
@@ -374,6 +388,47 @@ async fn fetch_position_value(address: &str) -> Result<PositionTotals> {
         .await
         .context("failed to decode Polymarket positions")?;
 
+    let snapshots = positions
+        .iter()
+        .map(|position| WalletPositionSnapshot {
+            market_slug: position
+                .get("slug")
+                .or_else(|| position.get("eventSlug"))
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            outcome: position
+                .get("outcome")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            asset: position
+                .get("asset")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string),
+            size: position
+                .get("size")
+                .and_then(serde_json::Value::as_f64)
+                .unwrap_or(0.0),
+            avg_price: position
+                .get("avgPrice")
+                .and_then(serde_json::Value::as_f64)
+                .unwrap_or(0.0),
+            cur_price: position
+                .get("curPrice")
+                .and_then(serde_json::Value::as_f64)
+                .unwrap_or(0.0),
+            current_value: position
+                .get("currentValue")
+                .and_then(serde_json::Value::as_f64)
+                .unwrap_or(0.0),
+            redeemable: position
+                .get("redeemable")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false),
+        })
+        .collect::<Vec<_>>();
+
     Ok(PositionTotals {
         position_value: positions
             .iter()
@@ -383,7 +438,7 @@ async fn fetch_position_value(address: &str) -> Result<PositionTotals> {
                     .and_then(serde_json::Value::as_f64)
             })
             .sum(),
-        positions_count: positions.len(),
+        positions: snapshots,
     })
 }
 

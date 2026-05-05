@@ -595,7 +595,49 @@ async fn run_bot(
                 signals: dash_snapshot.whale_signals.clone(),
                 binance_books: dash_snapshot.binance_books.clone(),
             };
+            let wallet_positions = dash_snapshot.wallet.positions.clone();
             drop(dash_snapshot);
+
+            for wallet_position in wallet_positions {
+                if wallet_position.redeemable
+                    || wallet_position.size <= 0.0
+                    || wallet_position.avg_price <= 0.0
+                    || !markets
+                        .iter()
+                        .any(|market| market.slug == wallet_position.market_slug)
+                    || state
+                        .bot_owns_position(&wallet_position.market_slug, &wallet_position.outcome)
+                {
+                    continue;
+                }
+                info!(
+                    market_slug = %wallet_position.market_slug,
+                    outcome = %wallet_position.outcome,
+                    size = %wallet_position.size,
+                    avg_price = %wallet_position.avg_price,
+                    "wallet reconciliation: adopting active wallet position for TP/exit management"
+                );
+                state.record_position_with_phase(
+                    wallet_position.market_slug.clone(),
+                    wallet_position.outcome.clone(),
+                    wallet_position.avg_price,
+                    wallet_position.size,
+                    Some("wallet-reconciled".to_string()),
+                );
+                dashboard_state.write().await.push_activity(
+                    "info",
+                    "Wallet Position Adopted",
+                    Some(&format!(
+                        "{} {} @ {:.2}",
+                        wallet_position.outcome,
+                        wallet_position.market_slug,
+                        wallet_position.avg_price
+                    )),
+                );
+                if let Err(error) = state.save(&settings.state_path).await {
+                    warn!(%error, "failed to persist reconciled wallet position");
+                }
+            }
             let mut exits_to_process = Vec::new();
 
             // 1. Identify which positions to exit
@@ -673,7 +715,26 @@ async fn run_bot(
                     } else {
                         "TREND LOSS"
                     };
-                    info!(%symbol, %reason, %whale_bias, outcome = %position.outcome, "EXIT TRIGGERED");
+                    info!(%symbol, %reason, %whale_bias, outcome = %position.outcome, entry = %position.avg_entry_price, current = %share_price, "EXIT TRIGGERED");
+                    if take_profit_exit {
+                        let profit_pct = if position.avg_entry_price > 0.0 {
+                            (share_price - position.avg_entry_price) / position.avg_entry_price
+                        } else {
+                            0.0
+                        };
+                        dashboard_state.write().await.push_activity(
+                            "success",
+                            "Adaptive TP Triggered",
+                            Some(&format!(
+                                "{} {} profit={:+.1}% price {:.2}->{:.2}",
+                                position.outcome,
+                                position.market_slug,
+                                profit_pct * 100.0,
+                                position.avg_entry_price,
+                                share_price
+                            )),
+                        );
+                    }
                     exits_to_process.push((market.clone(), position.clone(), reason));
                 }
             }
