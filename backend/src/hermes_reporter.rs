@@ -114,9 +114,18 @@ impl HermesReporter {
             .with_context(|| format!("failed to write {}", report_path.display()))?;
 
         let prompt = build_closed_market_prompt(&report_path, &report.observed_market.slug);
-        self.invoke_hermes(&prompt).await?;
+        let reporter = self.clone();
+        let slug_for_task = report.observed_market.slug.clone();
+        tokio::spawn(async move {
+            match reporter.invoke_hermes(&prompt).await {
+                Ok(()) => info!(slug = %slug_for_task, "closed market reported to Hermes Agent"),
+                Err(error) => {
+                    warn!(%error, slug = %slug_for_task, "closed market Hermes report failed")
+                }
+            }
+        });
 
-        info!(slug = %report.observed_market.slug, "closed market reported to Hermes Agent");
+        info!(slug = %report.observed_market.slug, "closed market queued for Hermes Agent");
         Ok(true)
     }
 
@@ -149,9 +158,18 @@ impl HermesReporter {
             .with_context(|| format!("failed to write {}", report_path.display()))?;
 
         let prompt = build_trade_execution_prompt(&report_path, &execution.market_slug);
-        self.invoke_hermes(&prompt).await?;
+        let reporter = self.clone();
+        let slug_for_task = execution.market_slug.clone();
+        tokio::spawn(async move {
+            match reporter.invoke_hermes(&prompt).await {
+                Ok(()) => info!(slug = %slug_for_task, "trade execution reported to Hermes Agent"),
+                Err(error) => {
+                    warn!(%error, slug = %slug_for_task, "trade execution Hermes report failed")
+                }
+            }
+        });
 
-        info!(slug = %execution.market_slug, "trade execution reported to Hermes Agent");
+        info!(slug = %execution.market_slug, "trade execution queued for Hermes Agent");
         Ok(true)
     }
 
