@@ -278,16 +278,23 @@ async fn run_bot(
                                 order.outcome.clone(),
                                 order.limit_price,
                                 order.shares,
+                                order.phase.clone(),
                             )
                         })
                         .collect::<Vec<_>>();
-                    for (order_id, slug, outcome, price, shares) in tracked_open {
+                    for (order_id, slug, outcome, price, shares, phase) in tracked_open {
                         if !wallet_order_ids.contains(&order_id)
                             && !state.bot_owns_position(&slug, &outcome)
                             && active_slugs.contains(&slug)
                         {
                             info!(%order_id, %slug, %outcome, "GTC order filled between scans: recording position");
-                            state.record_position(slug.clone(), outcome.clone(), price, shares);
+                            state.record_position_with_phase(
+                                slug.clone(),
+                                outcome.clone(),
+                                price,
+                                shares,
+                                phase,
+                            );
                             state.mark_order_resolved(&order_id);
                         }
                     }
@@ -355,6 +362,7 @@ async fn run_bot(
                                                 signal.outcome.clone(),
                                                 signal.price,
                                                 request.size,
+                                                Some(signal.phase.clone()),
                                             );
                                             if response_filled_immediately(&response.raw) {
                                                 if state.bot_owns_position(
@@ -370,13 +378,15 @@ async fn run_bot(
                                                         &signal.outcome,
                                                         signal.price,
                                                         request.size,
+                                                        Some(signal.phase.clone()),
                                                     );
                                                 } else {
-                                                    state.record_position(
+                                                    state.record_position_with_phase(
                                                         signal.market_slug.clone(),
                                                         signal.outcome.clone(),
                                                         signal.price,
                                                         request.size,
+                                                        Some(signal.phase.clone()),
                                                     );
                                                 }
                                                 state.mark_order_resolved(&order_id);
@@ -400,6 +410,7 @@ async fn run_bot(
                                                         market_slug: request.market_slug.clone(),
                                                         outcome: request.outcome.clone(),
                                                         side: "BUY".to_string(),
+                                                        phase: Some(signal.phase.clone()),
                                                         amount_usd: Some(request.amount_usd),
                                                         price: Some(request.price),
                                                         shares: Some(request.size),
@@ -432,6 +443,7 @@ async fn run_bot(
                                                         market_slug: request.market_slug.clone(),
                                                         outcome: request.outcome.clone(),
                                                         side: "BUY".to_string(),
+                                                        phase: Some(signal.phase.clone()),
                                                         amount_usd: Some(request.amount_usd),
                                                         price: Some(request.price),
                                                         shares: Some(request.size),
@@ -468,6 +480,7 @@ async fn run_bot(
                                                         market_slug: request.market_slug.clone(),
                                                         outcome: request.outcome.clone(),
                                                         side: "BUY".to_string(),
+                                                        phase: Some(signal.phase.clone()),
                                                         amount_usd: Some(request.amount_usd),
                                                         price: Some(request.price),
                                                         shares: Some(request.size),
@@ -499,6 +512,7 @@ async fn run_bot(
                                                         market_slug: request.market_slug.clone(),
                                                         outcome: request.outcome.clone(),
                                                         side: "BUY".to_string(),
+                                                        phase: Some(signal.phase.clone()),
                                                         amount_usd: Some(request.amount_usd),
                                                         price: Some(request.price),
                                                         shares: Some(request.size),
@@ -691,6 +705,7 @@ async fn run_bot(
                                             market_slug: request.market_slug.clone(),
                                             outcome: request.outcome.clone(),
                                             side: "SELL".to_string(),
+                                            phase: position.phase.clone(),
                                             amount_usd: Some(request.amount_usd),
                                             price: Some(request.price),
                                             shares: Some(request.size),
@@ -716,6 +731,7 @@ async fn run_bot(
                                             market_slug: request.market_slug.clone(),
                                             outcome: request.outcome.clone(),
                                             side: "SELL".to_string(),
+                                            phase: position.phase.clone(),
                                             amount_usd: Some(request.amount_usd),
                                             price: Some(request.price),
                                             shares: Some(request.size),
@@ -742,6 +758,7 @@ async fn run_bot(
                                             market_slug: request.market_slug.clone(),
                                             outcome: request.outcome.clone(),
                                             side: "SELL".to_string(),
+                                            phase: position.phase.clone(),
                                             amount_usd: Some(request.amount_usd),
                                             price: Some(request.price),
                                             shares: Some(request.size),

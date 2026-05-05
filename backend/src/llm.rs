@@ -87,6 +87,8 @@ pub struct TradeExecutionReport {
     pub market_slug: String,
     pub outcome: String,
     pub side: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub phase: Option<String>,
     pub amount_usd: Option<f64>,
     pub price: Option<f64>,
     pub shares: Option<f64>,

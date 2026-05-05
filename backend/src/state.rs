@@ -22,6 +22,8 @@ pub struct BotOrder {
     pub outcome: String,
     pub limit_price: f64,
     pub shares: f64,
+    #[serde(default)]
+    pub phase: Option<String>,
     pub created_at_ms: i64,
     pub status: String,
 }
@@ -30,6 +32,8 @@ pub struct BotOrder {
 pub struct BotPosition {
     pub market_slug: String,
     pub outcome: String,
+    #[serde(default)]
+    pub phase: Option<String>,
     #[serde(alias = "entry_price")]
     pub avg_entry_price: f64,
     #[serde(alias = "shares")]
@@ -89,7 +93,7 @@ impl BotState {
         shares: f64,
     ) {
         let id = Uuid::new_v4().to_string();
-        self.record_bot_order_with_id(id, market_slug, outcome, limit_price, shares);
+        self.record_bot_order_with_id(id, market_slug, outcome, limit_price, shares, None);
     }
 
     pub fn record_bot_order_with_id(
@@ -99,6 +103,7 @@ impl BotState {
         outcome: String,
         limit_price: f64,
         shares: f64,
+        phase: Option<String>,
     ) {
         self.bot_orders.insert(
             id.clone(),
@@ -108,6 +113,7 @@ impl BotState {
                 outcome,
                 limit_price,
                 shares,
+                phase,
                 created_at_ms: now_ms(),
                 status: "open".to_string(),
             },
@@ -139,6 +145,17 @@ impl BotState {
         entry_price: f64,
         shares: f64,
     ) {
+        self.record_position_with_phase(market_slug, outcome, entry_price, shares, None);
+    }
+
+    pub fn record_position_with_phase(
+        &mut self,
+        market_slug: String,
+        outcome: String,
+        entry_price: f64,
+        shares: f64,
+        phase: Option<String>,
+    ) {
         let key = position_key(&market_slug, &outcome);
         let cost = entry_price * shares;
         self.bot_positions.insert(
@@ -146,6 +163,7 @@ impl BotState {
             BotPosition {
                 market_slug,
                 outcome,
+                phase,
                 avg_entry_price: entry_price,
                 total_shares: shares,
                 total_cost_usd: cost,
@@ -161,6 +179,7 @@ impl BotState {
         outcome: &str,
         price: f64,
         shares: f64,
+        phase: Option<String>,
     ) {
         let key = position_key(market_slug, outcome);
         if let Some(pos) = self.bot_positions.get_mut(&key) {
@@ -169,6 +188,9 @@ impl BotState {
             pos.total_cost_usd += additional_cost;
             pos.avg_entry_price = pos.total_cost_usd / pos.total_shares;
             pos.last_buy_at_ms = now_ms();
+            if pos.phase.is_none() {
+                pos.phase = phase;
+            }
         }
     }
 
