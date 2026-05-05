@@ -171,6 +171,8 @@ pub async fn serve_dashboard(
         .route("/api/manual-order", post(manual_order))
         .route("/api/llm-reports", get(list_llm_reports))
         .route("/api/llm-reports/:id", get(get_llm_report))
+        .route("/api/hermes-reports", get(list_llm_reports))
+        .route("/api/hermes-reports/:id", get(get_llm_report))
         .layer(CorsLayer::permissive())
         .with_state(context);
 
