@@ -76,7 +76,10 @@ pub async fn run_whale_detector(settings: Settings, dashboard: SharedDashboard) 
                     dashboard.whale_signals = recent_signals.iter().cloned().collect();
                     dashboard.latest_whale_signal = Some(signal);
                     
-                    let whale_ctx = crate::snipe::WhaleContext { signals: dashboard.whale_signals.clone() };
+                    let whale_ctx = crate::snipe::WhaleContext {
+                        signals: dashboard.whale_signals.clone(),
+                        binance_books: dashboard.binance_books.clone(),
+                    };
                     dashboard.global_activity_score = whale_ctx.global_activity_score();
                 }
             }

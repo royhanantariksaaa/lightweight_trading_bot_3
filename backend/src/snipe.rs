@@ -1,7 +1,8 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 use crate::config::Settings;
-use crate::dashboard::WhaleSignal;
+use crate::dashboard::{BinanceBookInfo, WhaleSignal};
 use crate::polymarket::MarketSnapshot;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -18,20 +19,21 @@ pub struct SnipeSignal {
     pub stake_usd: f64,
     pub reason: String,
     pub dry_run: bool,
+    #[serde(default = "default_phase")]
+    pub phase: String,
 }
 
-/// Context from the whale detector that informs directional bias for each symbol.
-#[derive(Clone, Debug)]
+fn default_phase() -> String {
+    "phase2".to_string()
+}
+
+#[derive(Clone, Debug, Default)]
 pub struct WhaleContext {
-    /// Most recent whale signals from the dashboard, keyed by their base symbol (BTC, ETH, etc.)
     pub signals: Vec<WhaleSignal>,
+    pub binance_books: HashMap<String, BinanceBookInfo>,
 }
 
 impl WhaleContext {
-
-    /// Returns the net directional bias from recent whale activity for a given symbol.
-    /// Positive = bullish (whales buying), Negative = bearish (whales selling).
-    /// Value is in the range [-1.0, 1.0].
     pub fn directional_bias(&self, symbol: &str) -> f64 {
         let symbol_upper = symbol.to_ascii_uppercase();
         let relevant: Vec<&WhaleSignal> = self
@@ -44,11 +46,9 @@ impl WhaleContext {
             return 0.0;
         }
 
-        // Weight by notional size and recency (most recent signals first in the vec)
         let mut bullish_weight = 0.0_f64;
         let mut bearish_weight = 0.0_f64;
         for (idx, signal) in relevant.iter().enumerate() {
-            // Decay factor: most recent signal has full weight, older ones decay
             let recency = 1.0 / (1.0 + idx as f64 * 0.3);
             let tier_multiplier = match signal.tier.as_str() {
                 "SUPER_WHALE" => 3.0,
@@ -68,37 +68,40 @@ impl WhaleContext {
         if total <= 0.0 {
             return 0.0;
         }
-        // Returns [-1, 1]: +1 = all bullish whales, -1 = all bearish whales
         ((bullish_weight - bearish_weight) / total).clamp(-1.0, 1.0)
     }
 
-    /// Returns a score representing global whale activity [0, 1.0].
-    /// High score means many whales are currently active across all symbols.
     pub fn global_activity_score(&self) -> f64 {
         if self.signals.is_empty() {
             return 0.0;
         }
-        // Count signals in the last 2 minutes (assume signals are recent)
-        // Since we don't have a reliable relative clock here, we'll just use the signal count vs a threshold
-        let count = self.signals.len() as f64;
-        (count / 15.0).clamp(0.0, 1.0) // 15+ recent signals = max activity
+        (self.signals.len() as f64 / 15.0).clamp(0.0, 1.0)
+    }
+
+    pub fn binance_book_for_symbol(&self, symbol: &str) -> Option<&BinanceBookInfo> {
+        let key = resolve_binance_key(symbol, &self.binance_books)?;
+        self.binance_books.get(&key)
     }
 }
 
-pub fn find_last_minute_5m_snipes(
+pub fn find_phase1_whale_ride_signals(
     settings: &Settings,
     markets: &[MarketSnapshot],
     whale_ctx: &WhaleContext,
 ) -> Vec<SnipeSignal> {
+    if !settings.enable_phase1_whale_ride {
+        return Vec::new();
+    }
+
     let mut signals = markets
         .iter()
-        .filter(|market| market.seconds_to_expiry >= 0)
-        .filter(|market| market.seconds_to_expiry <= settings.snipe_window_seconds)
+        .filter(|market| market.seconds_to_expiry > settings.snipe_window_seconds)
+        .filter(|market| market.seconds_to_expiry <= 300)
         .filter(|market| {
             market.volume >= settings.snipe_min_volume_usd
                 || market.liquidity >= settings.snipe_min_liquidity_usd
         })
-        .filter_map(|market| pick_directional_outcome(settings, market, whale_ctx))
+        .filter_map(|market| pick_phase1_outcome(settings, market, whale_ctx))
         .collect::<Vec<_>>();
 
     signals.sort_by(|a, b| {
@@ -110,107 +113,172 @@ pub fn find_last_minute_5m_snipes(
     signals
 }
 
-/// Instead of scoring every outcome independently, this function:
-/// 1. Determines the likely winning direction using current_price vs price_to_beat
-/// 2. Picks the matching outcome ("Up" if price > reference, "Down" otherwise)
-/// 3. Adds whale signal awareness as a confidence booster/dampener
-/// 4. Buys at the best ask of the LIKELY WINNING side
-fn pick_directional_outcome(
+pub fn find_phase2_snipe_signals(
+    settings: &Settings,
+    markets: &[MarketSnapshot],
+    whale_ctx: &WhaleContext,
+) -> Vec<SnipeSignal> {
+    if !settings.enable_phase2_snipe {
+        return Vec::new();
+    }
+
+    let mut signals = markets
+        .iter()
+        .filter(|market| market.seconds_to_expiry >= 0)
+        .filter(|market| market.seconds_to_expiry <= settings.snipe_window_seconds)
+        .filter(|market| {
+            market.volume >= settings.snipe_min_volume_usd
+                || market.liquidity >= settings.snipe_min_liquidity_usd
+        })
+        .filter_map(|market| pick_phase2_outcome(settings, market, whale_ctx))
+        .collect::<Vec<_>>();
+
+    signals.sort_by(|a, b| {
+        b.expected_edge
+            .partial_cmp(&a.expected_edge)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    signals.truncate(settings.snipe_max_signals);
+    signals
+}
+
+pub fn find_last_minute_5m_snipes(
+    settings: &Settings,
+    markets: &[MarketSnapshot],
+    whale_ctx: &WhaleContext,
+) -> Vec<SnipeSignal> {
+    find_phase2_snipe_signals(settings, markets, whale_ctx)
+}
+
+fn pick_phase1_outcome(
     settings: &Settings,
     market: &MarketSnapshot,
     whale_ctx: &WhaleContext,
 ) -> Option<SnipeSignal> {
-    let price_to_beat = market.price_to_beat?;
-    let current_price = market.current_price?;
+    let symbol = extract_symbol(&market.slug);
+    let book = whale_ctx.binance_book_for_symbol(&symbol)?;
+    let imbalance = book.imbalance_pct / 100.0;
+    let threshold = settings.phase1_imbalance_threshold.abs();
 
-    if price_to_beat <= 0.0 || current_price <= 0.0 {
+    let going_up = if imbalance >= threshold {
+        true
+    } else if imbalance <= -threshold {
+        false
+    } else {
+        return None;
+    };
+
+    let whale_bias = whale_ctx.directional_bias(&symbol);
+    if going_up && whale_bias < -0.2 {
+        return None;
+    }
+    if !going_up && whale_bias > 0.2 {
         return None;
     }
 
-    // Step 1: Determine direction from reference price data
-    let price_delta_pct = (current_price - price_to_beat) / price_to_beat;
-    let going_up = price_delta_pct > 0.0;
-
-    // Step 2: Find the matching outcome
     let target_outcome_name = if going_up { "Up" } else { "Down" };
     let outcome = market
         .outcomes
         .iter()
         .find(|o| o.name.eq_ignore_ascii_case(target_outcome_name))?;
+    let buy_price = outcome.best_ask.or(outcome.best_bid).unwrap_or(outcome.price);
+    if buy_price <= 0.0 || buy_price > 0.85 {
+        return None;
+    }
 
-    // Step 3: Get the buy price (best ask, or fallback to current price)
+    let whale_alignment = if going_up { whale_bias.max(0.0) } else { (-whale_bias).max(0.0) };
+    let book_strength = (imbalance.abs() / threshold.max(0.01)).clamp(0.0, 2.0) / 2.0;
+    let liquidity_quality = ((market.volume + market.liquidity) / settings.snipe_liquidity_scale_usd).clamp(0.0, 1.0);
+    let confidence = (0.55 * book_strength + 0.25 * whale_alignment + 0.20 * liquidity_quality).clamp(0.0, 1.0);
+    if confidence < 0.45 {
+        return None;
+    }
+
+    let stake_usd = settings
+        .phase1_max_position_usd
+        .min(settings.live_max_order_usd)
+        .max(1.0);
+
+    Some(SnipeSignal {
+        market_slug: market.slug.clone(),
+        question: market.question.clone(),
+        outcome: outcome.name.clone(),
+        token_id: outcome.token_id.clone(),
+        price: buy_price,
+        expected_edge: confidence,
+        seconds_to_expiry: market.seconds_to_expiry,
+        volume: market.volume,
+        liquidity: market.liquidity,
+        stake_usd,
+        reason: format!(
+            "phase1-whale: {} {} imbalance={:+.1}% whale_bias={:+.2} conf={:.3} tte={}s",
+            target_outcome_name,
+            symbol,
+            book.imbalance_pct,
+            whale_bias,
+            confidence,
+            market.seconds_to_expiry,
+        ),
+        dry_run: settings.dry_run || !settings.allow_live_buys,
+        phase: "phase1".to_string(),
+    })
+}
+
+fn pick_phase2_outcome(
+    settings: &Settings,
+    market: &MarketSnapshot,
+    whale_ctx: &WhaleContext,
+) -> Option<SnipeSignal> {
+    let symbol = extract_symbol(&market.slug);
+    let (going_up, price_delta_pct) = match (market.price_to_beat, market.current_price) {
+        (Some(price_to_beat), Some(current_price)) if price_to_beat > 0.0 && current_price > 0.0 => {
+            let delta = (current_price - price_to_beat) / price_to_beat;
+            if delta.abs() < settings.snipe_min_price_delta_pct {
+                return None;
+            }
+            (delta > 0.0, delta)
+        }
+        _ => implied_direction_from_outcomes(market)?,
+    };
+
+    let target_outcome_name = if going_up { "Up" } else { "Down" };
+    let outcome = market
+        .outcomes
+        .iter()
+        .find(|o| o.name.eq_ignore_ascii_case(target_outcome_name))?;
     let buy_price = outcome.best_ask.or(outcome.best_bid).unwrap_or(outcome.price);
     if buy_price <= 0.0 || buy_price > settings.snipe_max_price {
         return None;
     }
 
-    // Step 4: Calculate directional confidence score
-    let symbol = extract_symbol(&market.slug);
     let whale_bias = whale_ctx.directional_bias(&symbol);
-
-    // Price momentum: how far current price has moved from reference
-    // Stronger moves = higher confidence in the direction
-    let momentum = price_delta_pct.abs().clamp(0.0, 0.02) / 0.02; // normalize to [0, 1]
-
-    // Step 4.1: Symbol-specific risk multiplier
-    // 'Cheap' coins or those prone to rug pulls get a penalty
-    let symbol_risk_penalty = match symbol.as_str() {
-        "XRP" | "SOL" | "DOGE" | "PEPE" => 0.15, // Stricter for these
-        _ => 0.0,
-    };
-
-    // Step 4.2: Activity-based strictness
-    // If whales are super active, we want a clearer signal (higher edge) before jumping in
-    let activity_score = whale_ctx.global_activity_score();
-    let activity_penalty = activity_score * 0.1; // Up to 0.1 additional edge required if market is wild
-
-    // Time pressure: closer to expiry = less time for reversal = more confident
+    let momentum = price_delta_pct.abs().clamp(0.0, 0.02) / 0.02;
     let time_pressure = 1.0
         - (market.seconds_to_expiry as f64 / settings.snipe_window_seconds as f64).clamp(0.0, 1.0);
+    let liquidity_quality = ((market.volume + market.liquidity) / settings.snipe_liquidity_scale_usd).clamp(0.0, 1.0);
+    let whale_alignment = if going_up { whale_bias.max(0.0) } else { (-whale_bias).max(0.0) };
+    let winner_clarity = ((buy_price - 0.50).abs() / 0.40).clamp(0.0, 1.0);
+    let confidence = (0.25 * momentum
+        + 0.20 * time_pressure
+        + 0.15 * liquidity_quality
+        + 0.15 * whale_alignment
+        + 0.25 * winner_clarity)
+        .clamp(0.0, 1.0);
 
-    // Liquidity quality: better liquidity = more reliable pricing
-    let liquidity_quality =
-        ((market.volume + market.liquidity) / settings.snipe_liquidity_scale_usd).clamp(0.0, 1.0);
-
-    // Whale alignment: does whale activity agree with our direction?
-    // whale_bias is [-1, 1], we want to check if it agrees with our direction
-    let whale_alignment = if going_up {
-        whale_bias.max(0.0) // positive bias helps Up
-    } else {
-        (-whale_bias).max(0.0) // negative bias helps Down
-    };
-
-    // Composite confidence score
-    let confidence = (0.35 * momentum       // price already moving our way
-        + 0.25 * time_pressure             // closer to expiry = safer
-        + 0.20 * liquidity_quality          // liquid markets are more reliable
-        + 0.20 * whale_alignment)           // whale support
-        - symbol_risk_penalty;              // Apply penalty for rug-prone coins
-
-    // Step 5: Urgency Bypass - If last 30 seconds, we always buy the winner
-    let is_urgent = market.seconds_to_expiry <= 30;
-    
-    // Expected edge: confidence minus what we have to pay
-    let expected_edge = if is_urgent {
-        1.0 // Force it to pass the edge check
-    } else {
-        confidence - (buy_price - 0.5).max(0.0)
-    };
-
-    // Apply activity-based edge requirement
-    let adjusted_min_edge = settings.snipe_min_edge + activity_penalty;
-
-    if !is_urgent && expected_edge < adjusted_min_edge {
+    let hail_mary = market.seconds_to_expiry <= settings.phase2_hail_mary_seconds;
+    let min_edge = if hail_mary { (settings.snipe_min_edge * 0.5).max(0.005) } else { settings.snipe_min_edge };
+    let expected_edge = confidence - (buy_price - 0.5).max(0.0);
+    if !hail_mary && confidence < 0.45 {
+        return None;
+    }
+    if expected_edge < min_edge {
         return None;
     }
 
-    // Step 6: Calculate stake (scaled by confidence, but maxed if urgent)
-    let stake_usd = if is_urgent {
-        settings.snipe_max_position_usd
-    } else {
-        (settings.snipe_max_position_usd * confidence.clamp(0.5, 1.0))
-            .min(settings.snipe_max_position_usd)
-    };
+    let stake_usd = (settings.snipe_max_position_usd * confidence.clamp(0.5, 1.0))
+        .min(settings.snipe_max_position_usd)
+        .min(settings.live_max_order_usd)
+        .max(1.0);
 
     Some(SnipeSignal {
         market_slug: market.slug.clone(),
@@ -224,22 +292,41 @@ fn pick_directional_outcome(
         liquidity: market.liquidity,
         stake_usd,
         reason: format!(
-            "{} snipe: {} {} δ={:+.4}% conf={:.3} whale={:+.2} tte={}s",
-            if is_urgent { "URGENT" } else { "directional" },
+            "phase2-{}: {} {} δ={:+.4}% conf={:.3} whale={:+.2} clarity={:.2} tte={}s",
+            if hail_mary { "hail-mary" } else { "confident" },
             target_outcome_name,
             symbol,
             price_delta_pct * 100.0,
             confidence,
             whale_bias,
+            winner_clarity,
             market.seconds_to_expiry,
         ),
         dry_run: settings.dry_run || !settings.allow_live_buys,
+        phase: "phase2".to_string(),
     })
+}
+
+fn implied_direction_from_outcomes(market: &MarketSnapshot) -> Option<(bool, f64)> {
+    let up = market.outcomes.iter().find(|o| o.name.eq_ignore_ascii_case("Up"))?;
+    let down = market.outcomes.iter().find(|o| o.name.eq_ignore_ascii_case("Down"))?;
+    let up_price = up.best_ask.or(up.best_bid).unwrap_or(up.price);
+    let down_price = down.best_ask.or(down.best_bid).unwrap_or(down.price);
+    if up_price <= 0.0 || down_price <= 0.0 || (up_price - down_price).abs() < 0.01 {
+        return None;
+    }
+    Some((up_price > down_price, (up_price - down_price).abs() / 100.0))
+}
+
+fn resolve_binance_key(symbol: &str, books: &HashMap<String, BinanceBookInfo>) -> Option<String> {
+    let upper = symbol.to_ascii_uppercase();
+    let candidates = [upper.clone(), format!("{}USDT", upper)];
+    candidates.into_iter().find(|candidate| books.contains_key(candidate))
 }
 
 fn extract_symbol(slug: &str) -> String {
     slug.split('-')
         .next()
-        .map(str::to_ascii_uppercase)
-        .unwrap_or_else(|| "UNK".to_string())
+        .unwrap_or("")
+        .to_ascii_uppercase()
 }

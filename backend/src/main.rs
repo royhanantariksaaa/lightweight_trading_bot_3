@@ -24,7 +24,7 @@ use crate::live::{
     hide_stale_display_orders, redeem_winnings, sell_request_from_position,
 };
 use crate::polymarket::PolymarketClient;
-use crate::snipe::{WhaleContext, find_last_minute_5m_snipes};
+use crate::snipe::{WhaleContext, find_phase1_whale_ride_signals, find_phase2_snipe_signals};
 use crate::state::{BotState, now_ms};
 use crate::strategy::{Decision, StrategyContext, evaluate_strategy};
 
@@ -123,6 +123,7 @@ async fn run_bot(
     let mut last_seen_markets: HashMap<String, crate::polymarket::MarketSnapshot> =
         HashMap::new();
     let mut last_live_order_ms = 0_i64;
+    let mut last_phase1_order_ms = 0_i64;
     let mut last_redeem_ms = 0_i64;
 
     loop {
@@ -187,10 +188,36 @@ async fn run_bot(
                         }
                     }
 
-                    // Read whale signals from dashboard to inform directional bias
-                    let whale_signals = dashboard_state.read().await.whale_signals.clone();
-                    let whale_ctx = WhaleContext { signals: whale_signals };
-                    let signals = find_last_minute_5m_snipes(&settings, &markets, &whale_ctx);
+                    // Read whale signals and Binance books from dashboard to inform directional bias
+                    let dash_snapshot = dashboard_state.read().await;
+                    let whale_ctx = WhaleContext {
+                        signals: dash_snapshot.whale_signals.clone(),
+                        binance_books: dash_snapshot.binance_books.clone(),
+                    };
+                    drop(dash_snapshot);
+
+                    let filtered_markets = if settings.active_symbols.is_empty() {
+                        markets.clone()
+                    } else {
+                        markets
+                            .iter()
+                            .filter(|market| {
+                                let symbol = market
+                                    .slug
+                                    .split('-')
+                                    .next()
+                                    .map(str::to_ascii_uppercase)
+                                    .unwrap_or_default();
+                                settings.active_symbols.contains(&symbol)
+                            })
+                            .cloned()
+                            .collect::<Vec<_>>()
+                    };
+
+                    let mut signals = find_phase2_snipe_signals(&settings, &filtered_markets, &whale_ctx);
+                    signals.extend(find_phase1_whale_ride_signals(&settings, &filtered_markets, &whale_ctx));
+                    let mut seen = HashSet::new();
+                    signals.retain(|signal| seen.insert(signal.market_slug.clone()));
                     let mut wallet = fetch_wallet_snapshot(&settings).await;
                     for order in stale_live_orders(&wallet, settings.maker_order_ttl_ms) {
                         match cancel_live_order(&settings, &order.id).await {
@@ -214,9 +241,15 @@ async fn run_bot(
                     hide_stale_display_orders(&settings, &mut wallet);
                     for signal in &signals {
                         if signal.dry_run {
-                            info!(?signal, "DRY RUN: last-minute 5m snipe candidate");
-                        } else if now_ms() - last_live_order_ms < settings.live_order_cooldown_ms {
-                            info!(?signal, "live order cooldown active: skipping candidate");
+                            info!(?signal, "DRY RUN: snipe candidate");
+                        } else if signal.phase == "phase1"
+                            && now_ms() - last_phase1_order_ms < settings.phase1_cooldown_ms
+                        {
+                            info!(?signal, "phase1 cooldown active: skipping candidate");
+                        } else if signal.phase != "phase1"
+                            && now_ms() - last_live_order_ms < settings.live_order_cooldown_ms
+                        {
+                            info!(?signal, "phase2 cooldown active: skipping candidate");
                         } else {
                             if let Some(exit_ms) = state.recent_exit_ms(&signal.market_slug, &signal.outcome) {
                                 let age = now_ms() - exit_ms;
@@ -271,6 +304,9 @@ async fn run_bot(
                                                 state.mark_order_resolved(&order_id);
                                             }
                                             last_live_order_ms = now_ms();
+                                            if signal.phase == "phase1" {
+                                                last_phase1_order_ms = now_ms();
+                                            }
                                             info!(?request, raw = ?response.raw, "placed live Polymarket CLOB V2 buy order");
                                             dashboard_state.write().await.push_activity("success", "Order Accepted", Some(&request.market_slug));
                                             if let Err(error) = llm_reporter
@@ -395,9 +431,13 @@ async fn run_bot(
 
         // --- POSITION MANAGEMENT & EARLY EXIT ---
         if settings.allow_live_sells {
-            let markets = dashboard_state.read().await.watched_markets.clone();
-            let whale_signals = dashboard_state.read().await.whale_signals.clone();
-            let whale_ctx = WhaleContext { signals: whale_signals };
+            let dash_snapshot = dashboard_state.read().await;
+            let markets = dash_snapshot.watched_markets.clone();
+            let whale_ctx = WhaleContext {
+                signals: dash_snapshot.whale_signals.clone(),
+                binance_books: dash_snapshot.binance_books.clone(),
+            };
+            drop(dash_snapshot);
             let mut exits_to_process = Vec::new();
 
             // 1. Identify which positions to exit

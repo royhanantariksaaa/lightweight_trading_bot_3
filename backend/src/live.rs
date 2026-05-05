@@ -77,7 +77,7 @@ pub fn buy_request_from_snipe(
         .token_id
         .clone()
         .ok_or_else(|| anyhow!("cannot place live order without clob token_id"))?;
-    guarded_request(
+    let mut request = guarded_request(
         settings,
         token_id,
         signal.market_slug.clone(),
@@ -86,7 +86,13 @@ pub fn buy_request_from_snipe(
         signal.price,
         (signal.stake_usd / signal.price).max(0.0),
         Some(signal.seconds_to_expiry),
-    )
+    )?;
+    if signal.phase == "phase1" {
+        request.order_type = if request.size >= 5.0 { "GTC" } else { "FAK" }.to_string();
+    } else {
+        request.order_type = "FAK".to_string();
+    }
+    Ok(request)
 }
 
 pub fn buy_request_from_market(
