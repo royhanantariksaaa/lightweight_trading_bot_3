@@ -176,6 +176,25 @@ fn pick_phase1_outcome(
         return None;
     }
 
+    // Phase 1 is a whale/book ride, not a contrarian lottery ticket.
+    // If the live Polymarket reference price is already moving against the
+    // Binance book direction, skip instead of buying cheap near-dead shares.
+    let price_delta_pct = match (market.price_to_beat, market.current_price) {
+        (Some(price_to_beat), Some(current_price))
+            if price_to_beat > 0.0 && current_price > 0.0 =>
+        {
+            let delta = (current_price - price_to_beat) / price_to_beat;
+            if going_up != (delta > 0.0) {
+                return None;
+            }
+            if delta.abs() < settings.snipe_min_price_delta_pct {
+                return None;
+            }
+            delta
+        }
+        _ => return None,
+    };
+
     let target_outcome_name = if going_up { "Up" } else { "Down" };
     let outcome = market
         .outcomes
@@ -185,7 +204,7 @@ fn pick_phase1_outcome(
         .best_ask
         .or(outcome.best_bid)
         .unwrap_or(outcome.price);
-    if buy_price <= 0.0 || buy_price > 0.85 {
+    if !(0.10..=0.85).contains(&buy_price) {
         return None;
     }
 
@@ -220,11 +239,12 @@ fn pick_phase1_outcome(
         liquidity: market.liquidity,
         stake_usd,
         reason: format!(
-            "phase1-whale: {} {} imbalance={:+.1}% whale_bias={:+.2} conf={:.3} tte={}s",
+            "phase1-whale: {} {} imbalance={:+.1}% whale_bias={:+.2} ref_delta={:+.4}% conf={:.3} tte={}s",
             target_outcome_name,
             symbol,
             book.imbalance_pct,
             whale_bias,
+            price_delta_pct * 100.0,
             confidence,
             market.seconds_to_expiry,
         ),
