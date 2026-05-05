@@ -71,6 +71,18 @@ async fn main() -> Result<()> {
         }
     });
 
+    let wallet_settings = runtime_settings.clone();
+    let wallet_dashboard = dashboard_state.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_secs(30)).await;
+            let settings = wallet_settings.read().await.clone();
+            let mut wallet = fetch_wallet_snapshot(&settings).await;
+            hide_stale_display_orders(&settings, &mut wallet);
+            wallet_dashboard.write().await.wallet = wallet;
+        }
+    });
+
     let bot_handle = tokio::spawn(run_bot(bot_settings, dashboard_state.clone()));
     let whale_handle = if whale_settings.enable_whale_detector {
         let whale_dashboard_state = dashboard_state.clone();
@@ -218,7 +230,7 @@ async fn run_bot(
                     signals.extend(find_phase1_whale_ride_signals(&settings, &filtered_markets, &whale_ctx));
                     let mut seen = HashSet::new();
                     signals.retain(|signal| seen.insert(signal.market_slug.clone()));
-                    let mut wallet = fetch_wallet_snapshot(&settings).await;
+                    let mut wallet = dashboard_state.read().await.wallet.clone();
                     for order in stale_live_orders(&wallet, settings.maker_order_ttl_ms) {
                         match cancel_live_order(&settings, &order.id).await {
                             Ok(response) if response.canceled => {
@@ -239,6 +251,35 @@ async fn run_bot(
                         }
                     }
                     hide_stale_display_orders(&settings, &mut wallet);
+                    let wallet_order_ids = wallet
+                        .open_orders
+                        .iter()
+                        .map(|order| order.id.clone())
+                        .collect::<HashSet<_>>();
+                    let tracked_open = state
+                        .bot_orders
+                        .values()
+                        .filter(|order| order.status == "open")
+                        .map(|order| {
+                            (
+                                order.id.clone(),
+                                order.market_slug.clone(),
+                                order.outcome.clone(),
+                                order.limit_price,
+                                order.shares,
+                            )
+                        })
+                        .collect::<Vec<_>>();
+                    for (order_id, slug, outcome, price, shares) in tracked_open {
+                        if !wallet_order_ids.contains(&order_id)
+                            && !state.bot_owns_position(&slug, &outcome)
+                            && active_slugs.contains(&slug)
+                        {
+                            info!(%order_id, %slug, %outcome, "GTC order filled between scans: recording position");
+                            state.record_position(slug.clone(), outcome.clone(), price, shares);
+                            state.mark_order_resolved(&order_id);
+                        }
+                    }
                     for signal in &signals {
                         if signal.dry_run {
                             info!(?signal, "DRY RUN: snipe candidate");
@@ -272,8 +313,13 @@ async fn run_bot(
                                     d.push_activity("whale", &format!("Snipe: {} {}", signal.outcome, signal.market_slug), Some(&signal.reason));
                                     drop(d);
 
-                                    match post_live_order(&settings, &request).await {
-                                        Ok(response) if response.success => {
+                                    match tokio::time::timeout(
+                                        Duration::from_secs(15),
+                                        post_live_order(&settings, &request),
+                                    )
+                                    .await
+                                    {
+                                        Ok(Ok(response)) if response.success => {
                                             let order_id = response
                                                 .order_id
                                                 .unwrap_or_else(|| format!("clob-{}", now_ms()));
@@ -332,7 +378,7 @@ async fn run_bot(
                                                 warn!(%error, "trade execution LLM report failed");
                                             }
                                         }
-                                        Ok(response) => {
+                                        Ok(Ok(response)) => {
                                             warn!(?request, raw = ?response.raw, "Polymarket CLOB V2 order was not accepted");
                                             dashboard_state.write().await.push_activity("error", "Order Rejected", Some(&format!("{:?}", response.raw)));
                                             if let Err(error) = llm_reporter
@@ -358,7 +404,7 @@ async fn run_bot(
                                                 warn!(%error, "trade execution LLM report failed");
                                             }
                                         }
-                                        Err(error) => {
+                                        Ok(Err(error)) => {
                                             error!(?error, "ERROR: failed to place live Polymarket CLOB V2 order");
                                             dashboard_state.write().await.push_activity("error", "Trade Error", Some(&error.to_string()));
                                             if let Err(report_error) = llm_reporter
@@ -377,6 +423,32 @@ async fn run_bot(
                                                         reason: "order submission failed".to_string(),
                                                         exchange_response: None,
                                                         error: Some(error.to_string()),
+                                                    },
+                                                )
+                                                .await
+                                            {
+                                                warn!(%report_error, "trade execution LLM report failed");
+                                            }
+                                        }
+                                        Err(_timeout) => {
+                                            warn!("live buy order timed out after 15s");
+                                            dashboard_state.write().await.push_activity("error", "Order Timeout", Some(&request.market_slug));
+                                            if let Err(report_error) = llm_reporter
+                                                .report_trade_execution(
+                                                    &settings,
+                                                    TradeExecutionReport {
+                                                        generated_at: Utc::now().to_rfc3339(),
+                                                        event_type: "live_buy_order".to_string(),
+                                                        market_slug: request.market_slug.clone(),
+                                                        outcome: request.outcome.clone(),
+                                                        side: "BUY".to_string(),
+                                                        amount_usd: Some(request.amount_usd),
+                                                        price: Some(request.price),
+                                                        shares: Some(request.size),
+                                                        success: false,
+                                                        reason: "order timed out".to_string(),
+                                                        exchange_response: None,
+                                                        error: Some("timeout after 15s".to_string()),
                                                     },
                                                 )
                                                 .await
@@ -457,12 +529,29 @@ async fn run_bot(
                     whale_bias > 0.3
                 };
 
-                // VOLATILITY HARVESTING: Take profit if we are significantly up and there is still time.
-                // If share price increased by 15% from our average entry, lock it in.
+                // ADAPTIVE TAKE-PROFIT: tighten/loosen based on whale + Binance book support.
                 let share_price = outcome.map(|o| o.price).unwrap_or(0.0);
                 let take_profit_exit = if share_price > 0.0 && position.avg_entry_price > 0.0 {
                     let profit_pct = (share_price - position.avg_entry_price) / position.avg_entry_price;
-                    profit_pct >= 0.15 && market.seconds_to_expiry > 60 // Only take profit early if > 1 min left
+                    let whale_support = if position.outcome == "Up" { whale_bias } else { -whale_bias };
+                    let book_support = whale_ctx
+                        .binance_book_for_symbol(&symbol)
+                        .map(|book| {
+                            let raw = book.imbalance_pct / 100.0;
+                            if position.outcome == "Up" { raw } else { -raw }
+                        })
+                        .unwrap_or(0.0);
+                    let support_score = whale_support * 0.6 + book_support * 0.4;
+                    let adaptive_tp = if support_score > 0.5 {
+                        0.10
+                    } else if support_score > 0.2 {
+                        0.05
+                    } else if support_score < -0.2 {
+                        0.01
+                    } else {
+                        settings.phase1_tp_pct
+                    };
+                    profit_pct >= adaptive_tp
                 } else {
                     false
                 };
@@ -485,8 +574,13 @@ async fn run_bot(
             for (market, position, reason) in exits_to_process {
                 match sell_request_from_position(&settings, &market, &position.outcome, position.total_shares) {
                     Ok(request) => {
-                        match post_live_order(&settings, &request).await {
-                            Ok(res) if res.success => {
+                        match tokio::time::timeout(
+                            Duration::from_secs(15),
+                            post_live_order(&settings, &request),
+                        )
+                        .await
+                        {
+                            Ok(Ok(res)) if res.success => {
                                 info!(?request, %reason, "POSITION CLOSED: Early exit executed");
                                 dashboard_state.write().await.push_activity("warn", &format!("Exit: {}", reason), Some(&format!("Exited {} {}", position.outcome, position.market_slug)));
                                 state.record_exit(&position.market_slug, &position.outcome);
@@ -513,7 +607,7 @@ async fn run_bot(
                                     warn!(%error, "trade execution LLM report failed");
                                 }
                             }
-                            Ok(res) => {
+                            Ok(Ok(res)) => {
                                 warn!(raw = ?res.raw, "Whale exit failed: order not accepted");
                                 if let Err(error) = llm_reporter
                                     .report_trade_execution(
@@ -538,7 +632,7 @@ async fn run_bot(
                                     warn!(%error, "trade execution LLM report failed");
                                 }
                             }
-                            Err(e) => {
+                            Ok(Err(e)) => {
                                 let err_str = e.to_string();
                                 warn!(error = %err_str, "Whale exit failed: execution error");
                                 if let Err(error) = llm_reporter
@@ -568,6 +662,10 @@ async fn run_bot(
                                     dashboard_state.write().await.push_activity("info", "Phantom Position Cleared", Some(&position.market_slug));
                                     state.record_exit(&position.market_slug, &position.outcome);
                                 }
+                            }
+                            Err(_timeout) => {
+                                warn!("live sell order timed out after 15s");
+                                dashboard_state.write().await.push_activity("error", "Sell Timeout", Some(&position.market_slug));
                             }
                         }
                     }
