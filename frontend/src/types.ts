@@ -6,6 +6,8 @@ export type Candidate = {
   seconds_to_expiry: number;
   stake_usd: number;
   dry_run: boolean;
+  phase?: string;
+  reason?: string;
 };
 
 export type WatchedMarket = {
@@ -34,6 +36,7 @@ export type DashboardStatus = {
   scanned_markets: number;
   candidates: Candidate[];
   watched_markets: WatchedMarket[];
+  last_snipe?: Candidate | null;
   latest_whale_signal?: WhaleSignal | null;
   whale_signals: WhaleSignal[];
   binance_books: Record<string, BinanceBookInfo>;
@@ -55,6 +58,7 @@ export type DashboardStatus = {
   llm_model: string;
   llm_report_dir: string;
   llm_code_patch_mode: string;
+  active_symbols: string[];
   wallet: WalletSnapshot;
 };
 
@@ -109,6 +113,7 @@ export type RuntimeSettingsUpdate = {
   live_max_order_usd: number;
   live_order_type: string;
   snipe_max_position_usd: number;
+  active_symbols: string;
   funder_address: string;
   signature_type?: number | null;
   private_key?: string | null;

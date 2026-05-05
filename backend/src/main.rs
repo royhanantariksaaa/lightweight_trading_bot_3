@@ -1,7 +1,7 @@
 mod config;
 mod dashboard;
-mod llm;
 mod live;
+mod llm;
 mod polymarket;
 mod snipe;
 mod state;
@@ -18,11 +18,11 @@ use tracing::{error, info, warn};
 
 use crate::config::Settings;
 use crate::dashboard::{DashboardState, SharedDashboard, serve_dashboard};
-use crate::llm::{LlmReporter, TradeExecutionReport};
 use crate::live::{
-    buy_request_from_snipe, cancel_live_order, fetch_wallet_snapshot, post_live_order,
-    hide_stale_display_orders, redeem_winnings, sell_request_from_position,
+    buy_request_from_snipe, cancel_live_order, fetch_wallet_snapshot, hide_stale_display_orders,
+    post_live_order, redeem_winnings, sell_request_from_position,
 };
+use crate::llm::{LlmReporter, TradeExecutionReport};
 use crate::polymarket::PolymarketClient;
 use crate::snipe::{WhaleContext, find_phase1_whale_ride_signals, find_phase2_snipe_signals};
 use crate::state::{BotState, now_ms};
@@ -56,6 +56,7 @@ async fn main() -> Result<()> {
         llm_model: settings.llm_model.clone(),
         llm_report_dir: settings.llm_report_dir.display().to_string(),
         llm_code_patch_mode: settings.llm_code_patch_mode.clone(),
+        active_symbols: settings.active_symbols.clone(),
         ..DashboardState::default()
     }));
 
@@ -132,8 +133,7 @@ async fn run_bot(
     let mut state = BotState::load_or_default(&initial_settings.state_path).await?;
     let polymarket = PolymarketClient::new(&initial_settings)?;
     let llm_reporter = LlmReporter::new();
-    let mut last_seen_markets: HashMap<String, crate::polymarket::MarketSnapshot> =
-        HashMap::new();
+    let mut last_seen_markets: HashMap<String, crate::polymarket::MarketSnapshot> = HashMap::new();
     let mut last_live_order_ms = 0_i64;
     let mut last_phase1_order_ms = 0_i64;
     let mut last_redeem_ms = 0_i64;
@@ -157,8 +157,7 @@ async fn run_bot(
                     if resolved_orders > 0 || resolved_positions > 0 {
                         info!(
                             resolved_orders,
-                            resolved_positions,
-                            "cleared local bot state for inactive markets"
+                            resolved_positions, "cleared local bot state for inactive markets"
                         );
                     }
                     let closed_observed = last_seen_markets
@@ -166,7 +165,9 @@ async fn run_bot(
                         .filter(|market| {
                             market
                                 .end_time
-                                .map(|end_time| end_time <= Utc::now() - ChronoDuration::seconds(10))
+                                .map(|end_time| {
+                                    end_time <= Utc::now() - ChronoDuration::seconds(10)
+                                })
                                 .unwrap_or(false)
                                 && !state.closed_market_reported(&market.slug)
                         })
@@ -226,8 +227,13 @@ async fn run_bot(
                             .collect::<Vec<_>>()
                     };
 
-                    let mut signals = find_phase2_snipe_signals(&settings, &filtered_markets, &whale_ctx);
-                    signals.extend(find_phase1_whale_ride_signals(&settings, &filtered_markets, &whale_ctx));
+                    let mut signals =
+                        find_phase2_snipe_signals(&settings, &filtered_markets, &whale_ctx);
+                    signals.extend(find_phase1_whale_ride_signals(
+                        &settings,
+                        &filtered_markets,
+                        &whale_ctx,
+                    ));
                     let mut seen = HashSet::new();
                     signals.retain(|signal| seen.insert(signal.market_slug.clone()));
                     let mut wallet = dashboard_state.read().await.wallet.clone();
@@ -239,7 +245,10 @@ async fn run_bot(
                                 dashboard_state.write().await.push_activity(
                                     "warn",
                                     "Stale Order Cancelled",
-                                    Some(&format!("{} {} @ {:.2}", order.outcome, order.side, order.price)),
+                                    Some(&format!(
+                                        "{} {} @ {:.2}",
+                                        order.outcome, order.side, order.price
+                                    )),
                                 );
                             }
                             Ok(response) => {
@@ -292,10 +301,18 @@ async fn run_bot(
                         {
                             info!(?signal, "phase2 cooldown active: skipping candidate");
                         } else {
-                            if let Some(exit_ms) = state.recent_exit_ms(&signal.market_slug, &signal.outcome) {
+                            if let Some(exit_ms) =
+                                state.recent_exit_ms(&signal.market_slug, &signal.outcome)
+                            {
                                 let age = now_ms() - exit_ms;
-                                if age < 10_000 { // 10 second "Greed Cooldown"
-                                    info!(?signal, age_ms = age, "RE-ENTRY BLOCKED: Greed cooldown active (last exit was {}s ago)", age / 1000);
+                                if age < 10_000 {
+                                    // 10 second "Greed Cooldown"
+                                    info!(
+                                        ?signal,
+                                        age_ms = age,
+                                        "RE-ENTRY BLOCKED: Greed cooldown active (last exit was {}s ago)",
+                                        age / 1000
+                                    );
                                     continue;
                                 }
                             }
@@ -310,7 +327,14 @@ async fn run_bot(
                                     info!(?signal, "SNIPE FOUND: placing live Polymarket order");
                                     let mut d = dashboard_state.write().await;
                                     d.last_snipe = Some(signal.clone());
-                                    d.push_activity("whale", &format!("Snipe: {} {}", signal.outcome, signal.market_slug), Some(&signal.reason));
+                                    d.push_activity(
+                                        "whale",
+                                        &format!(
+                                            "Snipe: {} {}",
+                                            signal.outcome, signal.market_slug
+                                        ),
+                                        Some(&signal.reason),
+                                    );
                                     drop(d);
 
                                     match tokio::time::timeout(
@@ -331,8 +355,14 @@ async fn run_bot(
                                                 request.size,
                                             );
                                             if response_filled_immediately(&response.raw) {
-                                                if state.bot_owns_position(&signal.market_slug, &signal.outcome) {
-                                                    info!(?signal, "AVERAGING DOWN: Adding to existing position");
+                                                if state.bot_owns_position(
+                                                    &signal.market_slug,
+                                                    &signal.outcome,
+                                                ) {
+                                                    info!(
+                                                        ?signal,
+                                                        "AVERAGING DOWN: Adding to existing position"
+                                                    );
                                                     state.record_position_addition(
                                                         &signal.market_slug,
                                                         &signal.outcome,
@@ -354,7 +384,11 @@ async fn run_bot(
                                                 last_phase1_order_ms = now_ms();
                                             }
                                             info!(?request, raw = ?response.raw, "placed live Polymarket CLOB V2 buy order");
-                                            dashboard_state.write().await.push_activity("success", "Order Accepted", Some(&request.market_slug));
+                                            dashboard_state.write().await.push_activity(
+                                                "success",
+                                                "Order Accepted",
+                                                Some(&request.market_slug),
+                                            );
                                             if let Err(error) = llm_reporter
                                                 .report_trade_execution(
                                                     &settings,
@@ -369,7 +403,9 @@ async fn run_bot(
                                                         shares: Some(request.size),
                                                         success: true,
                                                         reason: "order accepted".to_string(),
-                                                        exchange_response: Some(response.raw.clone()),
+                                                        exchange_response: Some(
+                                                            response.raw.clone(),
+                                                        ),
                                                         error: None,
                                                     },
                                                 )
@@ -380,7 +416,11 @@ async fn run_bot(
                                         }
                                         Ok(Ok(response)) => {
                                             warn!(?request, raw = ?response.raw, "Polymarket CLOB V2 order was not accepted");
-                                            dashboard_state.write().await.push_activity("error", "Order Rejected", Some(&format!("{:?}", response.raw)));
+                                            dashboard_state.write().await.push_activity(
+                                                "error",
+                                                "Order Rejected",
+                                                Some(&format!("{:?}", response.raw)),
+                                            );
                                             if let Err(error) = llm_reporter
                                                 .report_trade_execution(
                                                     &settings,
@@ -394,8 +434,11 @@ async fn run_bot(
                                                         price: Some(request.price),
                                                         shares: Some(request.size),
                                                         success: false,
-                                                        reason: "order rejected by exchange".to_string(),
-                                                        exchange_response: Some(response.raw.clone()),
+                                                        reason: "order rejected by exchange"
+                                                            .to_string(),
+                                                        exchange_response: Some(
+                                                            response.raw.clone(),
+                                                        ),
                                                         error: None,
                                                     },
                                                 )
@@ -405,8 +448,15 @@ async fn run_bot(
                                             }
                                         }
                                         Ok(Err(error)) => {
-                                            error!(?error, "ERROR: failed to place live Polymarket CLOB V2 order");
-                                            dashboard_state.write().await.push_activity("error", "Trade Error", Some(&error.to_string()));
+                                            error!(
+                                                ?error,
+                                                "ERROR: failed to place live Polymarket CLOB V2 order"
+                                            );
+                                            dashboard_state.write().await.push_activity(
+                                                "error",
+                                                "Trade Error",
+                                                Some(&error.to_string()),
+                                            );
                                             if let Err(report_error) = llm_reporter
                                                 .report_trade_execution(
                                                     &settings,
@@ -420,7 +470,8 @@ async fn run_bot(
                                                         price: Some(request.price),
                                                         shares: Some(request.size),
                                                         success: false,
-                                                        reason: "order submission failed".to_string(),
+                                                        reason: "order submission failed"
+                                                            .to_string(),
                                                         exchange_response: None,
                                                         error: Some(error.to_string()),
                                                     },
@@ -432,7 +483,11 @@ async fn run_bot(
                                         }
                                         Err(_timeout) => {
                                             warn!("live buy order timed out after 15s");
-                                            dashboard_state.write().await.push_activity("error", "Order Timeout", Some(&request.market_slug));
+                                            dashboard_state.write().await.push_activity(
+                                                "error",
+                                                "Order Timeout",
+                                                Some(&request.market_slug),
+                                            );
                                             if let Err(report_error) = llm_reporter
                                                 .report_trade_execution(
                                                     &settings,
@@ -448,7 +503,9 @@ async fn run_bot(
                                                         success: false,
                                                         reason: "order timed out".to_string(),
                                                         exchange_response: None,
-                                                        error: Some("timeout after 15s".to_string()),
+                                                        error: Some(
+                                                            "timeout after 15s".to_string(),
+                                                        ),
                                                     },
                                                 )
                                                 .await
@@ -460,7 +517,11 @@ async fn run_bot(
                                 }
                                 Err(error) => {
                                     warn!(%error, ?signal, "blocked live snipe candidate");
-                                    dashboard_state.write().await.push_activity("error", "Blocked Snipe", Some(&error.to_string()));
+                                    dashboard_state.write().await.push_activity(
+                                        "error",
+                                        "Blocked Snipe",
+                                        Some(&error.to_string()),
+                                    );
                                 }
                             }
                         }
@@ -481,6 +542,7 @@ async fn run_bot(
                     dashboard.funder_address = settings.polymarket_funder_address.clone();
                     dashboard.signature_type = settings.polymarket_signature_type;
                     dashboard.wallet = wallet;
+                    dashboard.active_symbols = settings.active_symbols.clone();
                     last_seen_markets = markets
                         .iter()
                         .map(|market| (market.slug.clone(), market.clone()))
@@ -514,14 +576,23 @@ async fn run_bot(
 
             // 1. Identify which positions to exit
             for position in state.bot_positions.values() {
-                let Some(market) = markets.iter().find(|m| m.slug == position.market_slug) else { continue; };
-                if market.seconds_to_expiry < 15 { continue; }
+                let Some(market) = markets.iter().find(|m| m.slug == position.market_slug) else {
+                    continue;
+                };
+                if market.seconds_to_expiry < 15 {
+                    continue;
+                }
 
                 let outcome = market.outcomes.iter().find(|o| o.name == position.outcome);
                 // What are the whales doing right now for this symbol?
-                let symbol = position.market_slug.split('-').next().unwrap_or("").to_uppercase();
+                let symbol = position
+                    .market_slug
+                    .split('-')
+                    .next()
+                    .unwrap_or("")
+                    .to_uppercase();
                 let whale_bias = whale_ctx.directional_bias(&symbol);
-                
+
                 // EMERGENCY WHALE EXIT: Exit if whales reverse strongly against us, regardless of profit/loss.
                 let whale_exit = if position.outcome == "Up" {
                     whale_bias < -0.3 // Increased threshold to avoid panic exits
@@ -532,8 +603,13 @@ async fn run_bot(
                 // ADAPTIVE TAKE-PROFIT: tighten/loosen based on whale + Binance book support.
                 let share_price = outcome.map(|o| o.price).unwrap_or(0.0);
                 let take_profit_exit = if share_price > 0.0 && position.avg_entry_price > 0.0 {
-                    let profit_pct = (share_price - position.avg_entry_price) / position.avg_entry_price;
-                    let whale_support = if position.outcome == "Up" { whale_bias } else { -whale_bias };
+                    let profit_pct =
+                        (share_price - position.avg_entry_price) / position.avg_entry_price;
+                    let whale_support = if position.outcome == "Up" {
+                        whale_bias
+                    } else {
+                        -whale_bias
+                    };
                     let book_support = whale_ctx
                         .binance_book_for_symbol(&symbol)
                         .map(|book| {
@@ -558,13 +634,21 @@ async fn run_bot(
 
                 // TREND LOSS: If Binance price crosses the Target (Price to Beat) against us, cut losses.
                 let trend_loss_exit = if position.outcome == "Up" {
-                    market.current_price.unwrap_or(f64::MAX) < (market.price_to_beat.unwrap_or(0.0) - 1.0) // 1 USD buffer
+                    market.current_price.unwrap_or(f64::MAX)
+                        < (market.price_to_beat.unwrap_or(0.0) - 1.0) // 1 USD buffer
                 } else {
-                    market.current_price.unwrap_or(0.0) > (market.price_to_beat.unwrap_or(f64::MAX) + 1.0)
+                    market.current_price.unwrap_or(0.0)
+                        > (market.price_to_beat.unwrap_or(f64::MAX) + 1.0)
                 };
 
                 if whale_exit || take_profit_exit || trend_loss_exit {
-                    let reason = if whale_exit { "WHALE REVERSAL" } else if take_profit_exit { "TAKE PROFIT" } else { "TREND LOSS" };
+                    let reason = if whale_exit {
+                        "WHALE REVERSAL"
+                    } else if take_profit_exit {
+                        "TAKE PROFIT"
+                    } else {
+                        "TREND LOSS"
+                    };
                     info!(%symbol, %reason, %whale_bias, outcome = %position.outcome, "EXIT TRIGGERED");
                     exits_to_process.push((market.clone(), position.clone(), reason));
                 }
@@ -572,7 +656,12 @@ async fn run_bot(
 
             // 2. Execute exits
             for (market, position, reason) in exits_to_process {
-                match sell_request_from_position(&settings, &market, &position.outcome, position.total_shares) {
+                match sell_request_from_position(
+                    &settings,
+                    &market,
+                    &position.outcome,
+                    position.total_shares,
+                ) {
                     Ok(request) => {
                         match tokio::time::timeout(
                             Duration::from_secs(15),
@@ -582,7 +671,14 @@ async fn run_bot(
                         {
                             Ok(Ok(res)) if res.success => {
                                 info!(?request, %reason, "POSITION CLOSED: Early exit executed");
-                                dashboard_state.write().await.push_activity("warn", &format!("Exit: {}", reason), Some(&format!("Exited {} {}", position.outcome, position.market_slug)));
+                                dashboard_state.write().await.push_activity(
+                                    "warn",
+                                    &format!("Exit: {}", reason),
+                                    Some(&format!(
+                                        "Exited {} {}",
+                                        position.outcome, position.market_slug
+                                    )),
+                                );
                                 state.record_exit(&position.market_slug, &position.outcome);
                                 if let Err(error) = llm_reporter
                                     .report_trade_execution(
@@ -658,14 +754,24 @@ async fn run_bot(
                                     warn!(%error, "trade execution LLM report failed");
                                 }
                                 if err_str.contains("balance is not enough") {
-                                    info!("Clearing phantom position (balance 0, likely an unfilled buy order).");
-                                    dashboard_state.write().await.push_activity("info", "Phantom Position Cleared", Some(&position.market_slug));
+                                    info!(
+                                        "Clearing phantom position (balance 0, likely an unfilled buy order)."
+                                    );
+                                    dashboard_state.write().await.push_activity(
+                                        "info",
+                                        "Phantom Position Cleared",
+                                        Some(&position.market_slug),
+                                    );
                                     state.record_exit(&position.market_slug, &position.outcome);
                                 }
                             }
                             Err(_timeout) => {
                                 warn!("live sell order timed out after 15s");
-                                dashboard_state.write().await.push_activity("error", "Sell Timeout", Some(&position.market_slug));
+                                dashboard_state.write().await.push_activity(
+                                    "error",
+                                    "Sell Timeout",
+                                    Some(&position.market_slug),
+                                );
                             }
                         }
                     }
@@ -675,7 +781,8 @@ async fn run_bot(
         }
 
         // --- AUTO REDEEM ---
-        if settings.auto_redeem && now_ms() - last_redeem_ms > 300_000 { // Every 5 mins
+        if settings.auto_redeem && now_ms() - last_redeem_ms > 300_000 {
+            // Every 5 mins
             if let Err(e) = redeem_winnings(&settings).await {
                 warn!(error = ?e, "Auto-redeem failed or not implemented");
             }

@@ -55,6 +55,7 @@ pub struct DashboardState {
     pub llm_report_dir: String,
     pub llm_code_patch_mode: String,
     pub wallet: WalletSnapshot,
+    pub active_symbols: Vec<String>,
     pub activities: VecDeque<ActivityLog>,
 }
 
@@ -62,7 +63,10 @@ impl DashboardState {
     pub fn push_activity(&mut self, level: &str, message: &str, detail: Option<&str>) {
         let log = ActivityLog {
             id: Uuid::new_v4().to_string(),
-            timestamp_ms: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64,
+            timestamp_ms: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as u64,
             level: level.to_string(),
             message: message.to_string(),
             detail: detail.map(|s| s.to_string()),
@@ -251,9 +255,11 @@ async fn get_llm_report(
         Some(report) => report,
         None => return Json(serde_json::json!({ "ok": false, "error": "report not found" })),
     };
-    let response_raw = fs::read_to_string(settings.llm_report_dir.join(format!(
-        "{id}-llm-response.json"
-    )))
+    let response_raw = fs::read_to_string(
+        settings
+            .llm_report_dir
+            .join(format!("{id}-llm-response.json")),
+    )
     .ok();
     let response = response_raw
         .as_deref()

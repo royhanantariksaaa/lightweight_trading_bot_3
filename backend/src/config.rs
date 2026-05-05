@@ -151,10 +151,7 @@ impl Settings {
                 .or_else(|| env_optional_string("OPENAI_API_KEY"))
                 .or_else(|| env_optional_string("DEEPSEEK_API_KEY")),
             llm_model: env_string("LLM_MODEL", ""),
-            llm_report_dir: PathBuf::from(env_string(
-                "LLM_REPORT_DIR",
-                "./data/llm-reports",
-            )),
+            llm_report_dir: PathBuf::from(env_string("LLM_REPORT_DIR", "./data/llm-reports")),
             llm_code_patch_mode: env_string("LLM_CODE_PATCH_MODE", "proposal_only"),
         })
     }
@@ -167,6 +164,7 @@ impl Settings {
         next.live_max_order_usd = update.live_max_order_usd;
         next.live_order_type = update.live_order_type.trim().to_ascii_uppercase();
         next.snipe_max_position_usd = update.snipe_max_position_usd;
+        next.active_symbols = parse_symbols(&update.active_symbols);
         next.polymarket_signature_type = update.signature_type;
         next.polymarket_funder_address = update.funder_address.trim().to_string();
         next.enable_llm_market_reports = update.enable_llm_market_reports;
@@ -181,7 +179,11 @@ impl Settings {
             ("ALLOW_LIVE_SELLS", update.allow_live_sells.to_string()),
             ("LIVE_MAX_ORDER_USD", update.live_max_order_usd.to_string()),
             ("LIVE_ORDER_TYPE", next.live_order_type.clone()),
-            ("SNIPE_MAX_POSITION_USD", update.snipe_max_position_usd.to_string()),
+            (
+                "SNIPE_MAX_POSITION_USD",
+                update.snipe_max_position_usd.to_string(),
+            ),
+            ("ACTIVE_SYMBOLS", next.active_symbols.join(",")),
             ("FUNDER_ADDRESS", update.funder_address.trim().to_string()),
             (
                 "ENABLE_LLM_MARKET_REPORTS",
@@ -313,6 +315,7 @@ pub struct RuntimeSettingsUpdate {
     pub live_max_order_usd: f64,
     pub live_order_type: String,
     pub snipe_max_position_usd: f64,
+    pub active_symbols: String,
     pub funder_address: String,
     pub signature_type: Option<u8>,
     pub private_key: Option<String>,
