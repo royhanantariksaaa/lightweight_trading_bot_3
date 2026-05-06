@@ -40,6 +40,26 @@ pub struct Settings {
     pub phase1_imbalance_threshold: f64,
     pub phase1_tp_pct: f64,
     pub phase1_max_position_usd: f64,
+    pub phase1_max_entry_price: f64,
+    pub enable_balanced_recovery: bool,
+    pub enable_same_side_avg_down: bool,
+    pub enable_opposite_side_hedge: bool,
+    pub enable_resolution_locked_hedge: bool,
+    pub max_market_recovery_cost_usd: f64,
+    pub recovery_target_worst_case_pnl: f64,
+    pub recovery_min_worst_case_improvement: f64,
+    pub recovery_max_adds_per_market: usize,
+    pub recovery_min_price_improvement_pct: f64,
+    pub recovery_require_book_support: bool,
+    pub recovery_cooldown_ms: i64,
+    pub phase1_min_hold_ms: i64,
+    pub exit_block_if_book_support: bool,
+    pub exit_book_support_threshold: f64,
+    pub disable_phase1_price_cap: bool,
+    pub enable_recovery_unwind: bool,
+    pub recovery_unwind_profit_pct: f64,
+    pub recovery_trailing_drawdown_pct: f64,
+    pub recovery_partial_sell_pct: f64,
     pub phase2_hail_mary_seconds: i64,
     pub snipe_window_seconds: i64,
     pub snipe_min_edge: f64,
@@ -81,6 +101,10 @@ pub struct Settings {
     pub hermes_binary_path: String,
     pub hermes_timeout_seconds: u64,
     pub hermes_report_dir: PathBuf,
+
+    pub enable_market_recorder: bool,
+    pub market_recorder_dir: PathBuf,
+    pub market_recorder_retention_hours: i64,
 }
 
 impl Settings {
@@ -120,6 +144,32 @@ impl Settings {
             phase1_imbalance_threshold: env_parse("PHASE1_IMBALANCE_THRESHOLD", 0.30)?,
             phase1_tp_pct: env_parse("PHASE1_TP_PCT", 0.03)?,
             phase1_max_position_usd: env_parse("PHASE1_MAX_POSITION_USD", 1.0)?,
+            phase1_max_entry_price: env_parse("PHASE1_MAX_ENTRY_PRICE", 0.40)?,
+            enable_balanced_recovery: env_bool("ENABLE_BALANCED_RECOVERY", true),
+            enable_same_side_avg_down: env_bool("ENABLE_SAME_SIDE_AVG_DOWN", true),
+            enable_opposite_side_hedge: env_bool("ENABLE_OPPOSITE_SIDE_HEDGE", false),
+            enable_resolution_locked_hedge: env_bool("ENABLE_RESOLUTION_LOCKED_HEDGE", false),
+            max_market_recovery_cost_usd: env_parse("MAX_MARKET_RECOVERY_COST_USD", 2.0)?,
+            recovery_target_worst_case_pnl: env_parse("RECOVERY_TARGET_WORST_CASE_PNL", -0.01)?,
+            recovery_min_worst_case_improvement: env_parse(
+                "RECOVERY_MIN_WORST_CASE_IMPROVEMENT",
+                0.03,
+            )?,
+            recovery_max_adds_per_market: env_parse("RECOVERY_MAX_ADDS_PER_MARKET", 1)?,
+            recovery_min_price_improvement_pct: env_parse(
+                "RECOVERY_MIN_PRICE_IMPROVEMENT_PCT",
+                0.12,
+            )?,
+            recovery_require_book_support: env_bool("RECOVERY_REQUIRE_BOOK_SUPPORT", true),
+            recovery_cooldown_ms: env_parse("RECOVERY_COOLDOWN_MS", 20_000)?,
+            phase1_min_hold_ms: env_parse("PHASE1_MIN_HOLD_MS", 15_000)?,
+            exit_block_if_book_support: env_bool("EXIT_BLOCK_IF_BOOK_SUPPORT", true),
+            exit_book_support_threshold: env_parse("EXIT_BOOK_SUPPORT_THRESHOLD", 0.12)?,
+            disable_phase1_price_cap: env_bool("DISABLE_PHASE1_PRICE_CAP", true),
+            enable_recovery_unwind: env_bool("ENABLE_RECOVERY_UNWIND", true),
+            recovery_unwind_profit_pct: env_parse("RECOVERY_UNWIND_PROFIT_PCT", 0.04)?,
+            recovery_trailing_drawdown_pct: env_parse("RECOVERY_TRAILING_DRAWDOWN_PCT", 0.03)?,
+            recovery_partial_sell_pct: env_parse("RECOVERY_PARTIAL_SELL_PCT", 0.50)?,
             phase2_hail_mary_seconds: env_parse("PHASE2_HAIL_MARY_SECONDS", 20)?,
             snipe_window_seconds: env_parse("SNIPE_WINDOW_SECONDS", 60)?,
             snipe_min_edge: env_parse("SNIPE_MIN_EDGE", 0.02)?,
@@ -166,6 +216,13 @@ impl Settings {
                 "HERMES_REPORT_DIR",
                 "/var/lib/trading-bot/hermes-reports",
             )),
+
+            enable_market_recorder: env_bool("ENABLE_MARKET_RECORDER", true),
+            market_recorder_dir: PathBuf::from(env_string(
+                "MARKET_RECORDER_DIR",
+                "/var/lib/trading-bot/market-recorder",
+            )),
+            market_recorder_retention_hours: env_parse("MARKET_RECORDER_RETENTION_HOURS", 24)?,
         })
     }
 
@@ -185,6 +242,51 @@ impl Settings {
         next.llm_model = update.llm_model.trim().to_string();
         next.llm_report_dir = PathBuf::from(update.llm_report_dir.trim());
         next.llm_code_patch_mode = update.llm_code_patch_mode.trim().to_string();
+        if let Some(value) = update.enable_balanced_recovery {
+            next.enable_balanced_recovery = value;
+        }
+        if let Some(value) = update.enable_same_side_avg_down {
+            next.enable_same_side_avg_down = value;
+        }
+        if let Some(value) = update.enable_opposite_side_hedge {
+            next.enable_opposite_side_hedge = value;
+        }
+        if let Some(value) = update.enable_resolution_locked_hedge {
+            next.enable_resolution_locked_hedge = value;
+        }
+        if let Some(value) = update.max_market_recovery_cost_usd {
+            next.max_market_recovery_cost_usd = value;
+        }
+        if let Some(value) = update.recovery_max_adds_per_market {
+            next.recovery_max_adds_per_market = value;
+        }
+        if let Some(value) = update.recovery_min_price_improvement_pct {
+            next.recovery_min_price_improvement_pct = value;
+        }
+        if let Some(value) = update.phase1_min_hold_ms {
+            next.phase1_min_hold_ms = value;
+        }
+        if let Some(value) = update.exit_confirmation_ticks {
+            next.exit_confirmation_ticks = value;
+        }
+        if let Some(value) = update.exit_block_if_book_support {
+            next.exit_block_if_book_support = value;
+        }
+        if let Some(value) = update.disable_phase1_price_cap {
+            next.disable_phase1_price_cap = value;
+        }
+        if let Some(value) = update.enable_recovery_unwind {
+            next.enable_recovery_unwind = value;
+        }
+        if let Some(value) = update.recovery_unwind_profit_pct {
+            next.recovery_unwind_profit_pct = value;
+        }
+        if let Some(value) = update.recovery_trailing_drawdown_pct {
+            next.recovery_trailing_drawdown_pct = value;
+        }
+        if let Some(value) = update.recovery_partial_sell_pct {
+            next.recovery_partial_sell_pct = value;
+        }
 
         let mut env_updates = vec![
             ("DRY_RUN", update.dry_run.to_string()),
@@ -208,6 +310,63 @@ impl Settings {
             (
                 "LLM_CODE_PATCH_MODE",
                 update.llm_code_patch_mode.trim().to_string(),
+            ),
+            (
+                "ENABLE_BALANCED_RECOVERY",
+                next.enable_balanced_recovery.to_string(),
+            ),
+            (
+                "ENABLE_SAME_SIDE_AVG_DOWN",
+                next.enable_same_side_avg_down.to_string(),
+            ),
+            (
+                "ENABLE_OPPOSITE_SIDE_HEDGE",
+                next.enable_opposite_side_hedge.to_string(),
+            ),
+            (
+                "ENABLE_RESOLUTION_LOCKED_HEDGE",
+                next.enable_resolution_locked_hedge.to_string(),
+            ),
+            (
+                "MAX_MARKET_RECOVERY_COST_USD",
+                next.max_market_recovery_cost_usd.to_string(),
+            ),
+            (
+                "RECOVERY_MAX_ADDS_PER_MARKET",
+                next.recovery_max_adds_per_market.to_string(),
+            ),
+            (
+                "RECOVERY_MIN_PRICE_IMPROVEMENT_PCT",
+                next.recovery_min_price_improvement_pct.to_string(),
+            ),
+            ("PHASE1_MIN_HOLD_MS", next.phase1_min_hold_ms.to_string()),
+            (
+                "EXIT_CONFIRMATION_TICKS",
+                next.exit_confirmation_ticks.to_string(),
+            ),
+            (
+                "EXIT_BLOCK_IF_BOOK_SUPPORT",
+                next.exit_block_if_book_support.to_string(),
+            ),
+            (
+                "DISABLE_PHASE1_PRICE_CAP",
+                next.disable_phase1_price_cap.to_string(),
+            ),
+            (
+                "ENABLE_RECOVERY_UNWIND",
+                next.enable_recovery_unwind.to_string(),
+            ),
+            (
+                "RECOVERY_UNWIND_PROFIT_PCT",
+                next.recovery_unwind_profit_pct.to_string(),
+            ),
+            (
+                "RECOVERY_TRAILING_DRAWDOWN_PCT",
+                next.recovery_trailing_drawdown_pct.to_string(),
+            ),
+            (
+                "RECOVERY_PARTIAL_SELL_PCT",
+                next.recovery_partial_sell_pct.to_string(),
             ),
         ];
 
@@ -299,6 +458,10 @@ impl Settings {
             auto_exit_no_edge = self.auto_exit_no_edge,
             auto_redeem = self.auto_redeem,
             enable_last_minute_5m_snipe = self.enable_last_minute_5m_snipe,
+            enable_balanced_recovery = self.enable_balanced_recovery,
+            enable_same_side_avg_down = self.enable_same_side_avg_down,
+            enable_opposite_side_hedge = self.enable_opposite_side_hedge,
+            enable_resolution_locked_hedge = self.enable_resolution_locked_hedge,
             snipe_window_seconds = self.snipe_window_seconds,
             snipe_max_position_usd = self.snipe_max_position_usd,
             enable_whale_detector = self.enable_whale_detector,
@@ -339,6 +502,36 @@ pub struct RuntimeSettingsUpdate {
     pub llm_model: String,
     pub llm_report_dir: String,
     pub llm_code_patch_mode: String,
+    #[serde(default)]
+    pub enable_balanced_recovery: Option<bool>,
+    #[serde(default)]
+    pub enable_same_side_avg_down: Option<bool>,
+    #[serde(default)]
+    pub enable_opposite_side_hedge: Option<bool>,
+    #[serde(default)]
+    pub enable_resolution_locked_hedge: Option<bool>,
+    #[serde(default)]
+    pub max_market_recovery_cost_usd: Option<f64>,
+    #[serde(default)]
+    pub recovery_max_adds_per_market: Option<usize>,
+    #[serde(default)]
+    pub recovery_min_price_improvement_pct: Option<f64>,
+    #[serde(default)]
+    pub phase1_min_hold_ms: Option<i64>,
+    #[serde(default)]
+    pub exit_confirmation_ticks: Option<usize>,
+    #[serde(default)]
+    pub exit_block_if_book_support: Option<bool>,
+    #[serde(default)]
+    pub disable_phase1_price_cap: Option<bool>,
+    #[serde(default)]
+    pub enable_recovery_unwind: Option<bool>,
+    #[serde(default)]
+    pub recovery_unwind_profit_pct: Option<f64>,
+    #[serde(default)]
+    pub recovery_trailing_drawdown_pct: Option<f64>,
+    #[serde(default)]
+    pub recovery_partial_sell_pct: Option<f64>,
 }
 
 fn parse_symbols(raw: &str) -> Vec<String> {

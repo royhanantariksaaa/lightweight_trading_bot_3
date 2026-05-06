@@ -54,6 +54,21 @@ pub struct DashboardState {
     pub llm_model: String,
     pub llm_report_dir: String,
     pub llm_code_patch_mode: String,
+    pub enable_balanced_recovery: bool,
+    pub enable_same_side_avg_down: bool,
+    pub enable_opposite_side_hedge: bool,
+    pub enable_resolution_locked_hedge: bool,
+    pub max_market_recovery_cost_usd: f64,
+    pub recovery_max_adds_per_market: usize,
+    pub recovery_min_price_improvement_pct: f64,
+    pub phase1_min_hold_ms: i64,
+    pub exit_confirmation_ticks: usize,
+    pub exit_block_if_book_support: bool,
+    pub disable_phase1_price_cap: bool,
+    pub enable_recovery_unwind: bool,
+    pub recovery_unwind_profit_pct: f64,
+    pub recovery_trailing_drawdown_pct: f64,
+    pub recovery_partial_sell_pct: f64,
     pub wallet: WalletSnapshot,
     pub active_symbols: Vec<String>,
     pub activities: VecDeque<ActivityLog>,
@@ -398,6 +413,22 @@ async fn update_settings(
             dashboard.llm_model = settings.llm_model.clone();
             dashboard.llm_report_dir = settings.hermes_report_dir.display().to_string();
             dashboard.llm_code_patch_mode = settings.llm_code_patch_mode.clone();
+            dashboard.enable_balanced_recovery = settings.enable_balanced_recovery;
+            dashboard.enable_same_side_avg_down = settings.enable_same_side_avg_down;
+            dashboard.enable_opposite_side_hedge = settings.enable_opposite_side_hedge;
+            dashboard.enable_resolution_locked_hedge = settings.enable_resolution_locked_hedge;
+            dashboard.max_market_recovery_cost_usd = settings.max_market_recovery_cost_usd;
+            dashboard.recovery_max_adds_per_market = settings.recovery_max_adds_per_market;
+            dashboard.recovery_min_price_improvement_pct =
+                settings.recovery_min_price_improvement_pct;
+            dashboard.phase1_min_hold_ms = settings.phase1_min_hold_ms;
+            dashboard.exit_confirmation_ticks = settings.exit_confirmation_ticks;
+            dashboard.exit_block_if_book_support = settings.exit_block_if_book_support;
+            dashboard.disable_phase1_price_cap = settings.disable_phase1_price_cap;
+            dashboard.enable_recovery_unwind = settings.enable_recovery_unwind;
+            dashboard.recovery_unwind_profit_pct = settings.recovery_unwind_profit_pct;
+            dashboard.recovery_trailing_drawdown_pct = settings.recovery_trailing_drawdown_pct;
+            dashboard.recovery_partial_sell_pct = settings.recovery_partial_sell_pct;
             dashboard.wallet = wallet;
             Json(serde_json::json!({ "ok": true }))
         }
@@ -439,6 +470,11 @@ const INDEX_HTML: &str = r#"<!doctype html>
     .badge { display: inline-block; padding: 4px 8px; border-radius: 999px; background: #1e293b; font-size: 12px; }
     .hot { background: #713f12; color: #fde68a; }
     .safe { background: #14532d; color: #bbf7d0; }
+    .controls { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; align-items: end; }
+    label { display: grid; gap: 6px; color: #94a3b8; font-size: 12px; text-transform: uppercase; letter-spacing: .08em; }
+    input, select, button { border-radius: 10px; border: 1px solid #334155; background: #0f172a; color: #edf2ff; padding: 10px; }
+    button { cursor: pointer; font-weight: 800; background: #1d4ed8; }
+    button.secondary { background: #334155; }
     a { color: #93c5fd; }
   </style>
 </head>
@@ -453,6 +489,61 @@ const INDEX_HTML: &str = r#"<!doctype html>
       <div class="card"><div class="muted">Markets scanned</div><div class="big" id="scanned">0</div></div>
       <div class="card"><div class="muted">Snipe candidates</div><div class="big" id="candidates">0</div></div>
       <div class="card"><div class="muted">Mode</div><div class="big" id="mode">DRY</div></div>
+      <div class="card"><div class="muted">Recovery</div><div class="big" id="recoveryMode">-</div><div class="muted" id="recoveryDetail">-</div></div>
+    </section>
+
+    <section class="card">
+      <h2>Recovery / Exit Controls</h2>
+      <div class="controls">
+        <label>Recovery master
+          <select id="ctlRecovery"><option value="true">ON</option><option value="false">OFF</option></select>
+        </label>
+        <label>Same-side avg-down
+          <select id="ctlSameSideAvgDown"><option value="true">ON</option><option value="false">OFF</option></select>
+        </label>
+        <label>Opposite hedge
+          <select id="ctlOppositeHedge"><option value="false">OFF</option><option value="true">ON</option></select>
+        </label>
+        <label>Resolution lock hedge
+          <select id="ctlResolutionLock"><option value="false">OFF</option><option value="true">ON</option></select>
+        </label>
+        <label>Recovery cap $
+          <input id="ctlRecoveryCap" type="number" step="0.01" min="1" max="5" />
+        </label>
+        <label>Max adds
+          <input id="ctlRecoveryAdds" type="number" step="1" min="0" max="5" />
+        </label>
+        <label>Min avg-down drop
+          <input id="ctlRecoveryDrop" type="number" step="0.01" min="0" max="0.5" />
+        </label>
+        <label>Min hold ms
+          <input id="ctlHoldMs" type="number" step="1000" min="0" />
+        </label>
+        <label>Exit ticks
+          <input id="ctlExitTicks" type="number" step="1" min="1" max="10" />
+        </label>
+        <label>Block exit if book supports
+          <select id="ctlExitBlock"><option value="true">ON</option><option value="false">OFF</option></select>
+        </label>
+        <label>Disable Phase1 price cap
+          <select id="ctlDisablePriceCap"><option value="true">ON</option><option value="false">OFF</option></select>
+        </label>
+        <label>Recovery unwind
+          <select id="ctlRecoveryUnwind"><option value="true">ON</option><option value="false">OFF</option></select>
+        </label>
+        <label>Unwind profit pct
+          <input id="ctlUnwindProfit" type="number" step="0.01" min="0" max="1" />
+        </label>
+        <label>Trail drawdown pct
+          <input id="ctlTrailDrawdown" type="number" step="0.01" min="0" max="1" />
+        </label>
+        <label>Partial sell pct
+          <input id="ctlPartialSell" type="number" step="0.05" min="0.1" max="1" />
+        </label>
+        <button onclick="saveRecoverySettings()">Save Controls</button>
+        <button class="secondary" onclick="refresh()">Reload</button>
+      </div>
+      <div id="settingsMsg" class="muted" style="margin-top:10px"></div>
     </section>
 
     <section class="card">
@@ -487,6 +578,10 @@ async function refresh() {
   document.getElementById('scanned').textContent = data.scanned_markets;
   document.getElementById('candidates').textContent = data.candidates.length;
   document.getElementById('mode').textContent = data.dry_run || !data.allow_live_buys ? 'DRY' : 'LIVE';
+  document.getElementById('recoveryMode').textContent = data.enable_balanced_recovery ? 'ON' : 'OFF';
+  document.getElementById('recoveryDetail').textContent = `same-side ${data.enable_same_side_avg_down ? 'ON' : 'OFF'} | opposite hedge ${data.enable_opposite_side_hedge ? 'ON' : 'OFF'} | resolution lock ${data.enable_resolution_locked_hedge ? 'ON' : 'OFF'} | cap $${Number(data.max_market_recovery_cost_usd || 0).toFixed(2)} | adds ${data.recovery_max_adds_per_market || 0} | hold ${Math.round((data.phase1_min_hold_ms || 0)/1000)}s | exit ticks ${data.exit_confirmation_ticks || 1} | unwind ${data.enable_recovery_unwind ? 'ON' : 'OFF'}`;
+  hydrateControls(data);
+  window.latestStatus = data;
   document.getElementById('error').textContent = data.last_error || 'None';
 
   const rows = document.getElementById('rows');
@@ -547,6 +642,69 @@ function renderLatestWhale(w) {
         ${metric('Move Liquidity', `up10 $${money(w.need_up_10)} / down10 $${money(w.need_down_10)}`)}
       </div>
     </div>`;
+}
+
+
+function hydrateControls(data) {
+  setValue('ctlRecovery', String(!!data.enable_balanced_recovery));
+  setValue('ctlSameSideAvgDown', String(!!data.enable_same_side_avg_down));
+  setValue('ctlOppositeHedge', String(!!data.enable_opposite_side_hedge));
+  setValue('ctlResolutionLock', String(!!data.enable_resolution_locked_hedge));
+  setValue('ctlRecoveryCap', Number(data.max_market_recovery_cost_usd || 0).toFixed(2));
+  setValue('ctlRecoveryAdds', data.recovery_max_adds_per_market || 0);
+  setValue('ctlRecoveryDrop', data.recovery_min_price_improvement_pct || 0.12);
+  setValue('ctlHoldMs', data.phase1_min_hold_ms || 0);
+  setValue('ctlExitTicks', data.exit_confirmation_ticks || 1);
+  setValue('ctlExitBlock', String(!!data.exit_block_if_book_support));
+  setValue('ctlDisablePriceCap', String(!!data.disable_phase1_price_cap));
+  setValue('ctlRecoveryUnwind', String(!!data.enable_recovery_unwind));
+  setValue('ctlUnwindProfit', data.recovery_unwind_profit_pct || 0.04);
+  setValue('ctlTrailDrawdown', data.recovery_trailing_drawdown_pct || 0.03);
+  setValue('ctlPartialSell', data.recovery_partial_sell_pct || 0.50);
+}
+function setValue(id, value) {
+  const el = document.getElementById(id);
+  if (el && document.activeElement !== el) el.value = value;
+}
+async function saveRecoverySettings() {
+  const data = window.latestStatus || await (await fetch('/api/status')).json();
+  const payload = {
+    dry_run: !!data.dry_run,
+    allow_live_buys: !!data.allow_live_buys,
+    allow_live_sells: !!data.allow_live_sells,
+    live_max_order_usd: Number(data.live_max_order_usd || 1),
+    live_order_type: data.live_order_type || 'FAK',
+    snipe_max_position_usd: Number(data.snipe_max_position_usd || 1),
+    active_symbols: (data.active_symbols || []).join(','),
+    funder_address: data.funder_address || '',
+    signature_type: data.signature_type ?? null,
+    private_key: null,
+    enable_llm_market_reports: !!data.enable_llm_market_reports,
+    llm_api_base: data.llm_api_base || '',
+    llm_api_key: null,
+    llm_model: data.llm_model || '',
+    llm_report_dir: data.llm_report_dir || '',
+    llm_code_patch_mode: data.llm_code_patch_mode || 'proposal_only',
+    enable_balanced_recovery: document.getElementById('ctlRecovery').value === 'true',
+    enable_same_side_avg_down: document.getElementById('ctlSameSideAvgDown').value === 'true',
+    enable_opposite_side_hedge: document.getElementById('ctlOppositeHedge').value === 'true',
+    enable_resolution_locked_hedge: document.getElementById('ctlResolutionLock').value === 'true',
+    max_market_recovery_cost_usd: Number(document.getElementById('ctlRecoveryCap').value || 2),
+    recovery_max_adds_per_market: Number(document.getElementById('ctlRecoveryAdds').value || 1),
+    recovery_min_price_improvement_pct: Number(document.getElementById('ctlRecoveryDrop').value || 0.12),
+    phase1_min_hold_ms: Number(document.getElementById('ctlHoldMs').value || 15000),
+    exit_confirmation_ticks: Number(document.getElementById('ctlExitTicks').value || 3),
+    exit_block_if_book_support: document.getElementById('ctlExitBlock').value === 'true',
+    disable_phase1_price_cap: document.getElementById('ctlDisablePriceCap').value === 'true',
+    enable_recovery_unwind: document.getElementById('ctlRecoveryUnwind').value === 'true',
+    recovery_unwind_profit_pct: Number(document.getElementById('ctlUnwindProfit').value || 0.04),
+    recovery_trailing_drawdown_pct: Number(document.getElementById('ctlTrailDrawdown').value || 0.03),
+    recovery_partial_sell_pct: Number(document.getElementById('ctlPartialSell').value || 0.50)
+  };
+  const res = await fetch('/api/settings', {method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify(payload)});
+  const out = await res.json();
+  document.getElementById('settingsMsg').textContent = out.ok ? 'Saved. Next scan uses updated settings.' : ('Save failed: ' + out.error);
+  await refresh();
 }
 
 function metric(label, value) {

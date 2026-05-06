@@ -12,6 +12,8 @@ pub struct BotState {
     pub recent_exits: HashMap<String, i64>,
     pub signal_counts: HashMap<String, SignalCounter>,
     #[serde(default)]
+    pub resolution_locks: HashMap<String, ResolutionLock>,
+    #[serde(default)]
     pub reported_closed_markets: HashSet<String>,
     #[serde(default)]
     pub last_exit_attempt_ms: HashMap<String, i64>,
@@ -49,11 +51,26 @@ pub struct BotPosition {
     pub confirmation_status: Option<String>,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ResolutionLock {
+    pub market_slug: String,
+    pub locked_at_ms: i64,
+    pub reason: String,
+    pub up_shares: f64,
+    pub down_shares: f64,
+    pub total_cost_usd: f64,
+    pub pnl_if_up: f64,
+    pub pnl_if_down: f64,
+    pub worst_case_pnl: f64,
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct SignalCounter {
     pub entry_ticks: usize,
     pub exit_ticks: usize,
     pub last_seen_ms: i64,
+    #[serde(default)]
+    pub peak_price: f64,
 }
 
 impl BotState {
@@ -140,6 +157,14 @@ impl BotState {
         let key = position_key(market_slug, outcome);
         self.bot_positions.remove(&key);
         self.recent_exits.insert(key, now_ms());
+    }
+
+    pub fn is_resolution_locked(&self, market_slug: &str) -> bool {
+        self.resolution_locks.contains_key(market_slug)
+    }
+
+    pub fn lock_resolution_market(&mut self, lock: ResolutionLock) {
+        self.resolution_locks.insert(lock.market_slug.clone(), lock);
     }
 
     pub fn record_position(
@@ -279,6 +304,26 @@ impl BotState {
         }
     }
 
+    pub fn reduce_position(&mut self, market_slug: &str, outcome: &str, sold_shares: f64) {
+        let key = position_key(market_slug, outcome);
+        if let Some(pos) = self.bot_positions.get_mut(&key) {
+            if sold_shares >= pos.total_shares * 0.995 {
+                self.bot_positions.remove(&key);
+                self.recent_exits.insert(key, now_ms());
+                return;
+            }
+            let remaining = (pos.total_shares - sold_shares).max(0.0);
+            let cost_per_share = if pos.total_shares > 0.0 {
+                pos.total_cost_usd / pos.total_shares
+            } else {
+                pos.avg_entry_price
+            };
+            pos.total_shares = remaining;
+            pos.total_cost_usd = cost_per_share * remaining;
+            pos.avg_entry_price = cost_per_share;
+        }
+    }
+
     pub fn bot_owns_position(&self, market_slug: &str, outcome: &str) -> bool {
         self.bot_positions
             .contains_key(&position_key(market_slug, outcome))
@@ -365,6 +410,8 @@ impl BotState {
         let before_positions = self.bot_positions.len();
         self.bot_positions
             .retain(|_, position| active_slugs.contains(&position.market_slug));
+        self.resolution_locks
+            .retain(|slug, _| active_slugs.contains(slug));
         (resolved_orders, before_positions - self.bot_positions.len())
     }
 }

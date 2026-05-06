@@ -200,6 +200,10 @@ fn pick_phase1_outcome(
         return None;
     };
 
+    if !phase1_direction_persisted(book, going_up) {
+        return None;
+    }
+
     let whale_bias = whale_ctx.directional_bias(&symbol);
     if going_up && whale_bias < -0.2 {
         return None;
@@ -247,7 +251,9 @@ fn pick_phase1_outcome(
         .best_ask
         .or(outcome.best_bid)
         .unwrap_or(outcome.price);
-    if !(0.10..=0.85).contains(&buy_price) {
+    if buy_price < 0.10
+        || (!settings.disable_phase1_price_cap && buy_price > settings.phase1_max_entry_price)
+    {
         return None;
     }
 
@@ -301,6 +307,24 @@ fn pick_phase1_outcome(
         dry_run: settings.dry_run || !settings.allow_live_buys,
         phase: "phase1".to_string(),
     })
+}
+
+fn phase1_direction_persisted(book: &BinanceBookInfo, going_up: bool) -> bool {
+    let samples = book
+        .imbalance_history
+        .iter()
+        .rev()
+        .take(3)
+        .map(|sample| sample.imbalance_pct / 100.0)
+        .collect::<Vec<_>>();
+    if samples.len() < 2 {
+        return true;
+    }
+    let aligned = samples
+        .iter()
+        .filter(|&&sample| sample.abs() >= 0.08 && (sample > 0.0) == going_up)
+        .count();
+    aligned >= 2
 }
 
 fn detect_imbalance_momentum(book: &BinanceBookInfo) -> Option<ImbalanceMomentum> {

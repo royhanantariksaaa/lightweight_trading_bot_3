@@ -3,6 +3,7 @@ mod dashboard;
 mod hermes_reporter;
 mod live;
 mod llm;
+mod market_recorder;
 mod polymarket;
 mod snipe;
 mod state;
@@ -21,14 +22,14 @@ use crate::config::Settings;
 use crate::dashboard::{DashboardState, SharedDashboard, serve_dashboard};
 use crate::hermes_reporter::HermesReporter;
 use crate::live::{
-    buy_request_from_snipe, cancel_live_order, fetch_wallet_snapshot, hide_stale_display_orders,
-    is_fak_liquidity_miss, live_order_error_summary, post_live_order, redeem_winnings,
-    retry_buy_request_at_price, sell_request_from_position,
+    buy_request_from_market, buy_request_from_snipe, cancel_live_order, fetch_wallet_snapshot,
+    hide_stale_display_orders, is_fak_liquidity_miss, live_order_error_summary, post_live_order,
+    redeem_winnings, retry_buy_request_at_price, sell_request_from_position,
 };
 use crate::llm::TradeExecutionReport;
 use crate::polymarket::PolymarketClient;
 use crate::snipe::{WhaleContext, find_phase1_whale_ride_signals, find_phase2_snipe_signals};
-use crate::state::{BotState, now_ms};
+use crate::state::{BotState, ResolutionLock, now_ms};
 use crate::strategy::{Decision, StrategyContext, evaluate_strategy};
 
 #[tokio::main]
@@ -59,6 +60,21 @@ async fn main() -> Result<()> {
         llm_model: settings.llm_model.clone(),
         llm_report_dir: settings.hermes_report_dir.display().to_string(),
         llm_code_patch_mode: settings.llm_code_patch_mode.clone(),
+        enable_balanced_recovery: settings.enable_balanced_recovery,
+        enable_same_side_avg_down: settings.enable_same_side_avg_down,
+        enable_opposite_side_hedge: settings.enable_opposite_side_hedge,
+        enable_resolution_locked_hedge: settings.enable_resolution_locked_hedge,
+        max_market_recovery_cost_usd: settings.max_market_recovery_cost_usd,
+        recovery_max_adds_per_market: settings.recovery_max_adds_per_market,
+        recovery_min_price_improvement_pct: settings.recovery_min_price_improvement_pct,
+        phase1_min_hold_ms: settings.phase1_min_hold_ms,
+        exit_confirmation_ticks: settings.exit_confirmation_ticks,
+        exit_block_if_book_support: settings.exit_block_if_book_support,
+        disable_phase1_price_cap: settings.disable_phase1_price_cap,
+        enable_recovery_unwind: settings.enable_recovery_unwind,
+        recovery_unwind_profit_pct: settings.recovery_unwind_profit_pct,
+        recovery_trailing_drawdown_pct: settings.recovery_trailing_drawdown_pct,
+        recovery_partial_sell_pct: settings.recovery_partial_sell_pct,
         active_symbols: settings.active_symbols.clone(),
         ..DashboardState::default()
     }));
@@ -85,6 +101,12 @@ async fn main() -> Result<()> {
             hide_stale_display_orders(&settings, &mut wallet);
             wallet_dashboard.write().await.wallet = wallet;
         }
+    });
+
+    let recorder_settings = runtime_settings.clone();
+    let recorder_dashboard = dashboard_state.clone();
+    tokio::spawn(async move {
+        market_recorder::run_market_recorder(recorder_settings, recorder_dashboard).await;
     });
 
     let bot_handle = tokio::spawn(run_bot(bot_settings, dashboard_state.clone()));
@@ -755,6 +777,11 @@ async fn run_bot(
                     dashboard.wallet_configured = settings.polymarket_private_key.is_some();
                     dashboard.funder_address = settings.polymarket_funder_address.clone();
                     dashboard.signature_type = settings.polymarket_signature_type;
+                    dashboard.enable_balanced_recovery = settings.enable_balanced_recovery;
+                    dashboard.enable_same_side_avg_down = settings.enable_same_side_avg_down;
+                    dashboard.enable_opposite_side_hedge = settings.enable_opposite_side_hedge;
+                    dashboard.enable_resolution_locked_hedge =
+                        settings.enable_resolution_locked_hedge;
                     dashboard.wallet = wallet;
                     dashboard.active_symbols = settings.active_symbols.clone();
                     last_seen_markets = markets
@@ -788,7 +815,7 @@ async fn run_bot(
             let wallet_positions = dash_snapshot.wallet.positions.clone();
             drop(dash_snapshot);
 
-            for wallet_position in wallet_positions {
+            for wallet_position in &wallet_positions {
                 if wallet_position.redeemable
                     || wallet_position.size <= 0.0
                     || wallet_position.avg_price <= 0.0
@@ -844,13 +871,361 @@ async fn run_bot(
                     warn!(%error, "failed to persist reconciled wallet position");
                 }
             }
+            let mut recovery_markets = HashSet::new();
+            if settings.enable_balanced_recovery && settings.allow_live_buys && !settings.dry_run {
+                let positions = state.bot_positions.values().cloned().collect::<Vec<_>>();
+                for position in positions {
+                    if state.is_resolution_locked(&position.market_slug) {
+                        continue;
+                    }
+                    let Some(market) = markets.iter().find(|m| m.slug == position.market_slug)
+                    else {
+                        continue;
+                    };
+                    if market.seconds_to_expiry < 30 {
+                        continue;
+                    }
+                    let market_positions = state
+                        .bot_positions
+                        .values()
+                        .filter(|pos| pos.market_slug == position.market_slug)
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    if market_positions.iter().any(|pos| {
+                        pos.confirmation_status.as_deref() == Some("pending_exchange_confirmation")
+                    }) {
+                        continue;
+                    }
+                    let total_cost: f64 =
+                        market_positions.iter().map(|pos| pos.total_cost_usd).sum();
+                    if total_cost >= settings.max_market_recovery_cost_usd {
+                        continue;
+                    }
+                    let add_count = state
+                        .bot_orders
+                        .values()
+                        .filter(|order| order.market_slug == position.market_slug)
+                        .count()
+                        .saturating_sub(1);
+                    if add_count >= settings.recovery_max_adds_per_market {
+                        continue;
+                    }
+                    let recovery_key = format!("{}::recovery", position.market_slug);
+                    if let Some(counter) = state.signal_counts.get(&recovery_key) {
+                        if now_ms() - counter.last_seen_ms < settings.recovery_cooldown_ms {
+                            continue;
+                        }
+                    }
+
+                    let up_shares: f64 = market_positions
+                        .iter()
+                        .filter(|pos| pos.outcome.eq_ignore_ascii_case("Up"))
+                        .map(|pos| pos.total_shares)
+                        .sum();
+                    let down_shares: f64 = market_positions
+                        .iter()
+                        .filter(|pos| pos.outcome.eq_ignore_ascii_case("Down"))
+                        .map(|pos| pos.total_shares)
+                        .sum();
+                    let has_both_sides = up_shares > 0.0 && down_shares > 0.0;
+                    if has_both_sides {
+                        // Dual-side exposure is only coherent when it was intentionally
+                        // converted into a resolution lock. Do not add more recovery here.
+                        continue;
+                    }
+                    let worst_before = up_shares.min(down_shares) - total_cost;
+                    if worst_before >= settings.recovery_target_worst_case_pnl {
+                        continue;
+                    }
+
+                    let symbol = position
+                        .market_slug
+                        .split('-')
+                        .next()
+                        .unwrap_or("")
+                        .to_uppercase();
+                    let whale_bias = whale_ctx.directional_bias(&symbol);
+                    let raw_book_support = whale_ctx
+                        .binance_book_for_symbol(&symbol)
+                        .map(|book| book.imbalance_pct / 100.0)
+                        .unwrap_or(0.0);
+                    let aligned_book_support = if position.outcome.eq_ignore_ascii_case("Up") {
+                        raw_book_support
+                    } else {
+                        -raw_book_support
+                    };
+                    let opposite_whale_against = if position.outcome.eq_ignore_ascii_case("Up") {
+                        whale_bias < -0.2
+                    } else {
+                        whale_bias > 0.2
+                    };
+
+                    let Some(current_outcome) = market
+                        .outcomes
+                        .iter()
+                        .find(|outcome| outcome.name.eq_ignore_ascii_case(&position.outcome))
+                    else {
+                        continue;
+                    };
+                    let current_price = current_outcome
+                        .best_ask
+                        .or(current_outcome.best_bid)
+                        .unwrap_or(current_outcome.price);
+                    let position_age_ms = now_ms() - position.opened_at_ms;
+                    let mut recovery_outcome = None;
+                    let mut recovery_reason = String::new();
+                    let mut recovery_phase = "same-side-recovery".to_string();
+                    let mut lock_after_buy = false;
+
+                    // Same-side cliff avg-down: only add to the original outcome, only
+                    // after the position has aged, only if the price is materially cheaper,
+                    // and only if Binance/whale flow has not invalidated the thesis.
+                    if settings.enable_same_side_avg_down
+                        && current_price > 0.0
+                        && current_price
+                            <= position.avg_entry_price
+                                * (1.0 - settings.recovery_min_price_improvement_pct)
+                        && position_age_ms >= settings.phase1_min_hold_ms
+                        && (!settings.recovery_require_book_support || aligned_book_support >= 0.12)
+                        && !opposite_whale_against
+                    {
+                        recovery_outcome = Some(position.outcome.clone());
+                        recovery_reason = format!(
+                            "same-side avg-down: {} {:.2}->{:.2} age={}s book_support={:+.1}% whale_bias={:+.2}",
+                            position.outcome,
+                            position.avg_entry_price,
+                            current_price,
+                            position_age_ms / 1000,
+                            aligned_book_support * 100.0,
+                            whale_bias
+                        );
+                    } else if settings.enable_opposite_side_hedge
+                        && settings.enable_resolution_locked_hedge
+                    {
+                        // Opposite-side buy is not recovery scalping. If enabled, it must
+                        // create a near-neutral payoff table and then lock the whole market
+                        // until resolution/redeem. No early exits are allowed after success.
+                        let opposite = if position.outcome.eq_ignore_ascii_case("Up") {
+                            "Down"
+                        } else {
+                            "Up"
+                        };
+                        if let Some(opposite_outcome) = market
+                            .outcomes
+                            .iter()
+                            .find(|outcome| outcome.name.eq_ignore_ascii_case(opposite))
+                        {
+                            let opposite_price = opposite_outcome
+                                .best_ask
+                                .or(opposite_outcome.best_bid)
+                                .unwrap_or(opposite_outcome.price);
+                            if opposite_price > 0.0 {
+                                let add_cost = settings
+                                    .live_max_order_usd
+                                    .min(settings.max_market_recovery_cost_usd - total_cost);
+                                if add_cost >= 0.99 {
+                                    let add_shares = add_cost / opposite_price;
+                                    let (new_up, new_down) = if opposite == "Up" {
+                                        (up_shares + add_shares, down_shares)
+                                    } else {
+                                        (up_shares, down_shares + add_shares)
+                                    };
+                                    let new_total_cost = total_cost + add_cost;
+                                    let pnl_if_up = new_up - new_total_cost;
+                                    let pnl_if_down = new_down - new_total_cost;
+                                    let worst_after = pnl_if_up.min(pnl_if_down);
+                                    let improves = worst_after
+                                        >= worst_before
+                                            + settings.recovery_min_worst_case_improvement;
+                                    let hits_target =
+                                        worst_after >= settings.recovery_target_worst_case_pnl;
+                                    if improves && hits_target {
+                                        recovery_outcome = Some(opposite.to_string());
+                                        recovery_phase = "resolution-hedge".to_string();
+                                        lock_after_buy = true;
+                                        recovery_reason = format!(
+                                            "resolution hedge: payoff Up={:+.2} Down={:+.2} worst {:+.2}->{:+.2} price={:.2}",
+                                            pnl_if_up,
+                                            pnl_if_down,
+                                            worst_before,
+                                            worst_after,
+                                            opposite_price
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    let Some(outcome_to_buy) = recovery_outcome else {
+                        continue;
+                    };
+                    let amount_usd = settings
+                        .live_max_order_usd
+                        .min(settings.max_market_recovery_cost_usd - total_cost);
+                    if amount_usd < 0.99 {
+                        continue;
+                    }
+                    match buy_request_from_market(&settings, market, &outcome_to_buy, amount_usd) {
+                        Ok(mut request) => {
+                            request.order_type = "FAK".to_string();
+                            match tokio::time::timeout(
+                                Duration::from_secs(15),
+                                post_live_order(&settings, &request),
+                            )
+                            .await
+                            {
+                                Ok(Ok(response)) if response.success => {
+                                    let order_id = response
+                                        .order_id
+                                        .clone()
+                                        .unwrap_or_else(|| format!("recovery-{}", now_ms()));
+                                    state.record_bot_order_with_id(
+                                        order_id,
+                                        request.market_slug.clone(),
+                                        request.outcome.clone(),
+                                        request.price,
+                                        request.size,
+                                        Some(recovery_phase.clone()),
+                                    );
+                                    if state
+                                        .bot_owns_position(&request.market_slug, &request.outcome)
+                                    {
+                                        state.record_position_addition(
+                                            &request.market_slug,
+                                            &request.outcome,
+                                            request.price,
+                                            request.size,
+                                            Some(recovery_phase.clone()),
+                                        );
+                                    } else {
+                                        state.record_position_with_phase(
+                                            request.market_slug.clone(),
+                                            request.outcome.clone(),
+                                            request.price,
+                                            request.size,
+                                            Some(recovery_phase.clone()),
+                                        );
+                                    }
+                                    if lock_after_buy {
+                                        let locked_up =
+                                            if request.outcome.eq_ignore_ascii_case("Up") {
+                                                up_shares + request.size
+                                            } else {
+                                                up_shares
+                                            };
+                                        let locked_down =
+                                            if request.outcome.eq_ignore_ascii_case("Down") {
+                                                down_shares + request.size
+                                            } else {
+                                                down_shares
+                                            };
+                                        let locked_cost = total_cost + request.amount_usd;
+                                        let pnl_if_up = locked_up - locked_cost;
+                                        let pnl_if_down = locked_down - locked_cost;
+                                        let worst_case_pnl = pnl_if_up.min(pnl_if_down);
+                                        state.lock_resolution_market(ResolutionLock {
+                                            market_slug: request.market_slug.clone(),
+                                            locked_at_ms: now_ms(),
+                                            reason: recovery_reason.clone(),
+                                            up_shares: locked_up,
+                                            down_shares: locked_down,
+                                            total_cost_usd: locked_cost,
+                                            pnl_if_up,
+                                            pnl_if_down,
+                                            worst_case_pnl,
+                                        });
+                                    }
+                                    recovery_markets.insert(request.market_slug.clone());
+                                    let recovery_counter = state
+                                        .signal_counts
+                                        .entry(recovery_key.clone())
+                                        .or_default();
+                                    recovery_counter.entry_ticks += 1;
+                                    recovery_counter.last_seen_ms = now_ms();
+                                    dashboard_state.write().await.push_activity(
+                                        "warn",
+                                        if lock_after_buy {
+                                            "Resolution Lock Entered"
+                                        } else {
+                                            "Same-Side Recovery Buy Executed"
+                                        },
+                                        Some(&format!(
+                                            "{} {} ${:.2} @ {:.2} — {}",
+                                            request.outcome,
+                                            request.market_slug,
+                                            request.amount_usd,
+                                            request.price,
+                                            recovery_reason
+                                        )),
+                                    );
+                                    if let Err(error) = hermes_reporter
+                                        .report_trade_execution(
+                                            &settings,
+                                            TradeExecutionReport {
+                                                generated_at: Utc::now().to_rfc3339(),
+                                                event_type: if lock_after_buy {
+                                                    "live_resolution_hedge_buy_order".to_string()
+                                                } else {
+                                                    "live_recovery_buy_order".to_string()
+                                                },
+                                                market_slug: request.market_slug.clone(),
+                                                outcome: request.outcome.clone(),
+                                                side: "BUY".to_string(),
+                                                phase: Some(recovery_phase.clone()),
+                                                amount_usd: Some(request.amount_usd),
+                                                price: Some(request.price),
+                                                shares: Some(request.size),
+                                                success: true,
+                                                reason: recovery_reason.clone(),
+                                                exchange_response: Some(response.raw.clone()),
+                                                error: None,
+                                            },
+                                        )
+                                        .await
+                                    {
+                                        warn!(%error, "recovery buy LLM report failed");
+                                    }
+                                }
+                                Ok(Ok(response)) => {
+                                    warn!(raw = ?response.raw, %recovery_reason, "recovery buy rejected");
+                                }
+                                Ok(Err(error)) => {
+                                    warn!(%error, %recovery_reason, "recovery buy failed");
+                                }
+                                Err(_) => {
+                                    warn!(%recovery_reason, "recovery buy timed out");
+                                }
+                            }
+                        }
+                        Err(error) => {
+                            warn!(%error, %recovery_reason, "failed to build recovery buy")
+                        }
+                    }
+                }
+                if let Err(error) = state.save(&settings.state_path).await {
+                    warn!(%error, "failed to persist recovery state");
+                }
+            }
+
             let mut exits_to_process = Vec::new();
 
             // 1. Identify which positions to exit
-            for position in state.bot_positions.values() {
+            for position in state.bot_positions.values().cloned() {
                 let Some(market) = markets.iter().find(|m| m.slug == position.market_slug) else {
                     continue;
                 };
+                if state.is_resolution_locked(&position.market_slug) {
+                    info!(
+                        market_slug = %position.market_slug,
+                        outcome = %position.outcome,
+                        "RESOLUTION LOCKED: skipping early exit"
+                    );
+                    continue;
+                }
+                if recovery_markets.contains(&position.market_slug) {
+                    continue;
+                }
                 if market.seconds_to_expiry < 15 {
                     continue;
                 }
@@ -864,6 +1239,20 @@ async fn run_bot(
                     .unwrap_or("")
                     .to_uppercase();
                 let whale_bias = whale_ctx.directional_bias(&symbol);
+                let book_support = whale_ctx
+                    .binance_book_for_symbol(&symbol)
+                    .map(|book| {
+                        let raw = book.imbalance_pct / 100.0;
+                        if position.outcome == "Up" { raw } else { -raw }
+                    })
+                    .unwrap_or(0.0);
+                let whale_support = if position.outcome == "Up" {
+                    whale_bias
+                } else {
+                    -whale_bias
+                };
+                let support_score = whale_support * 0.6 + book_support * 0.4;
+                let position_age_ms = now_ms() - position.opened_at_ms;
 
                 // EMERGENCY WHALE EXIT: Exit if whales reverse strongly against us, regardless of profit/loss.
                 let whale_exit = if position.outcome == "Up" {
@@ -877,19 +1266,6 @@ async fn run_bot(
                 let take_profit_exit = if share_price > 0.0 && position.avg_entry_price > 0.0 {
                     let profit_pct =
                         (share_price - position.avg_entry_price) / position.avg_entry_price;
-                    let whale_support = if position.outcome == "Up" {
-                        whale_bias
-                    } else {
-                        -whale_bias
-                    };
-                    let book_support = whale_ctx
-                        .binance_book_for_symbol(&symbol)
-                        .map(|book| {
-                            let raw = book.imbalance_pct / 100.0;
-                            if position.outcome == "Up" { raw } else { -raw }
-                        })
-                        .unwrap_or(0.0);
-                    let support_score = whale_support * 0.6 + book_support * 0.4;
                     let adaptive_tp = if support_score > 0.5 {
                         0.10
                     } else if support_score > 0.2 {
@@ -904,6 +1280,58 @@ async fn run_bot(
                     false
                 };
 
+                // RECOVERY UNWIND: once an avg-down/hedge leg bounces, do not wait for
+                // the generic exit stack. Take controlled profit or trail from the peak.
+                let mut recovery_unwind_exit = false;
+                let mut recovery_sell_shares = position.total_shares;
+                if settings.enable_recovery_unwind
+                    && share_price > 0.0
+                    && position.avg_entry_price > 0.0
+                {
+                    let market_order_count = state
+                        .bot_orders
+                        .values()
+                        .filter(|order| order.market_slug == position.market_slug)
+                        .count();
+                    let is_recovery_position =
+                        position.phase.as_deref() == Some("recovery") || market_order_count > 1;
+                    if is_recovery_position {
+                        let profit_pct =
+                            (share_price - position.avg_entry_price) / position.avg_entry_price;
+                        let unwind_key = format!(
+                            "{}::{}::recovery-unwind",
+                            position.market_slug, position.outcome
+                        );
+                        let counter = state.signal_counts.entry(unwind_key).or_default();
+                        if share_price > counter.peak_price {
+                            counter.peak_price = share_price;
+                        }
+                        counter.last_seen_ms = now_ms();
+                        let drawdown_from_peak = if counter.peak_price > 0.0 {
+                            (counter.peak_price - share_price) / counter.peak_price
+                        } else {
+                            0.0
+                        };
+                        let profit_ready = profit_pct >= settings.recovery_unwind_profit_pct;
+                        let trail_hit = counter.peak_price
+                            >= position.avg_entry_price
+                                * (1.0 + settings.recovery_unwind_profit_pct)
+                            && drawdown_from_peak >= settings.recovery_trailing_drawdown_pct;
+                        let support_fading = support_score <= 0.20;
+                        recovery_unwind_exit = profit_ready && (support_fading || trail_hit);
+                        if recovery_unwind_exit {
+                            let requested = position.total_shares
+                                * settings.recovery_partial_sell_pct.clamp(0.10, 1.0);
+                            recovery_sell_shares =
+                                if requested >= 5.0 && position.total_shares - requested >= 1.0 {
+                                    requested
+                                } else {
+                                    position.total_shares
+                                };
+                        }
+                    }
+                }
+
                 // TREND LOSS: If Binance price crosses the Target (Price to Beat) against us, cut losses.
                 let trend_loss_exit = if position.outcome == "Up" {
                     market.current_price.unwrap_or(f64::MAX)
@@ -913,15 +1341,79 @@ async fn run_bot(
                         > (market.price_to_beat.unwrap_or(f64::MAX) + 1.0)
                 };
 
-                if whale_exit || take_profit_exit || trend_loss_exit {
-                    let reason = if whale_exit {
+                let raw_exit_triggered =
+                    recovery_unwind_exit || whale_exit || take_profit_exit || trend_loss_exit;
+                if raw_exit_triggered {
+                    let reason = if recovery_unwind_exit {
+                        "RECOVERY UNWIND"
+                    } else if whale_exit {
                         "WHALE REVERSAL"
                     } else if take_profit_exit {
                         "TAKE PROFIT"
                     } else {
                         "TREND LOSS"
                     };
-                    info!(%symbol, %reason, %whale_bias, outcome = %position.outcome, entry = %position.avg_entry_price, current = %share_price, "EXIT TRIGGERED");
+
+                    let exit_key = format!("{}::{}::exit", position.market_slug, position.outcome);
+                    if !take_profit_exit
+                        && !recovery_unwind_exit
+                        && position_age_ms < settings.phase1_min_hold_ms
+                    {
+                        let counter = state.signal_counts.entry(exit_key).or_default();
+                        counter.exit_ticks = 0;
+                        counter.last_seen_ms = now_ms();
+                        info!(
+                            %symbol,
+                            %reason,
+                            age_ms = position_age_ms,
+                            min_hold_ms = settings.phase1_min_hold_ms,
+                            outcome = %position.outcome,
+                            "EXIT DELAYED: minimum hold window active"
+                        );
+                        continue;
+                    }
+                    if !take_profit_exit
+                        && !recovery_unwind_exit
+                        && settings.exit_block_if_book_support
+                        && book_support >= settings.exit_book_support_threshold
+                    {
+                        let counter = state.signal_counts.entry(exit_key).or_default();
+                        counter.exit_ticks = 0;
+                        counter.last_seen_ms = now_ms();
+                        info!(
+                            %symbol,
+                            %reason,
+                            book_support = book_support,
+                            outcome = %position.outcome,
+                            "EXIT BLOCKED: Binance book still supports position"
+                        );
+                        continue;
+                    }
+                    if !take_profit_exit
+                        && !recovery_unwind_exit
+                        && settings.exit_confirmation_ticks > 1
+                    {
+                        let counter = state.signal_counts.entry(exit_key.clone()).or_default();
+                        let now = now_ms();
+                        if now - counter.last_seen_ms > 30_000 {
+                            counter.exit_ticks = 0;
+                        }
+                        counter.exit_ticks += 1;
+                        counter.last_seen_ms = now;
+                        if counter.exit_ticks < settings.exit_confirmation_ticks {
+                            info!(
+                                %symbol,
+                                %reason,
+                                ticks = counter.exit_ticks,
+                                required = settings.exit_confirmation_ticks,
+                                outcome = %position.outcome,
+                                "EXIT DELAYED: waiting for reversal confirmation"
+                            );
+                            continue;
+                        }
+                    }
+
+                    info!(%symbol, %reason, %whale_bias, book_support = book_support, outcome = %position.outcome, entry = %position.avg_entry_price, current = %share_price, "EXIT TRIGGERED");
                     if take_profit_exit {
                         let profit_pct = if position.avg_entry_price > 0.0 {
                             (share_price - position.avg_entry_price) / position.avg_entry_price
@@ -941,12 +1433,17 @@ async fn run_bot(
                             )),
                         );
                     }
-                    exits_to_process.push((market.clone(), position.clone(), reason));
+                    exits_to_process.push((
+                        market.clone(),
+                        position.clone(),
+                        reason,
+                        recovery_sell_shares,
+                    ));
                 }
             }
 
             // 2. Execute exits
-            for (market, position, reason) in exits_to_process {
+            for (market, position, reason, sell_shares) in exits_to_process {
                 let exit_key = format!("{}::{}", position.market_slug, position.outcome);
                 let now = now_ms();
                 if let Some(last_attempt) = state.last_exit_attempt_ms.get(&exit_key) {
@@ -960,13 +1457,39 @@ async fn run_bot(
                         continue;
                     }
                 }
+                let actual_wallet_shares = wallet_positions
+                    .iter()
+                    .filter(|wallet_position| {
+                        !wallet_position.redeemable
+                            && wallet_position.market_slug == position.market_slug
+                            && wallet_position
+                                .outcome
+                                .eq_ignore_ascii_case(&position.outcome)
+                    })
+                    .map(|wallet_position| wallet_position.size)
+                    .fold(0.0, f64::max);
+                if actual_wallet_shares <= 0.0 {
+                    info!(
+                        market_slug = %position.market_slug,
+                        outcome = %position.outcome,
+                        "exit reconciliation: wallet has zero shares; clearing stale bot position"
+                    );
+                    dashboard_state.write().await.push_activity(
+                        "info",
+                        "Stale Position Cleared",
+                        Some(&format!(
+                            "{} {} wallet shares=0 before sell",
+                            position.outcome, position.market_slug
+                        )),
+                    );
+                    state.record_exit(&position.market_slug, &position.outcome);
+                    state.last_exit_attempt_ms.remove(&exit_key);
+                    continue;
+                }
+                let sell_shares = sell_shares.min(actual_wallet_shares);
                 state.last_exit_attempt_ms.insert(exit_key.clone(), now);
-                match sell_request_from_position(
-                    &settings,
-                    &market,
-                    &position.outcome,
-                    position.total_shares,
-                ) {
+                match sell_request_from_position(&settings, &market, &position.outcome, sell_shares)
+                {
                     Ok(request) => {
                         match tokio::time::timeout(
                             Duration::from_secs(15),
@@ -985,7 +1508,15 @@ async fn run_bot(
                                         position.outcome, position.market_slug
                                     )),
                                 );
-                                state.record_exit(&position.market_slug, &position.outcome);
+                                if sell_shares >= position.total_shares * 0.995 {
+                                    state.record_exit(&position.market_slug, &position.outcome);
+                                } else {
+                                    state.reduce_position(
+                                        &position.market_slug,
+                                        &position.outcome,
+                                        sell_shares,
+                                    );
+                                }
                                 if let Err(error) = hermes_reporter
                                     .report_trade_execution(
                                         &settings,
