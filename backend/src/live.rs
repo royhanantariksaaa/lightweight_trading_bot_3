@@ -78,8 +78,11 @@ pub struct LiveOrderResponse {
 }
 
 pub fn is_fak_liquidity_miss(error: &anyhow::Error) -> bool {
-    format!("{error:#}")
-        .to_ascii_lowercase()
+    is_fak_liquidity_miss_text(&format!("{error:#}"))
+}
+
+fn is_fak_liquidity_miss_text(text: &str) -> bool {
+    text.to_ascii_lowercase()
         .contains("no orders found to match")
 }
 
@@ -226,16 +229,10 @@ pub async fn post_live_order(
         .with_context(|| format!("invalid CLOB token_id={}", request.token_id))?;
     let order_type = sdk_order_type(&request.order_type)?;
 
-    let is_marketable_buy = matches!(request.side, LiveSide::Buy)
-        && (request.order_type.eq_ignore_ascii_case("FAK")
-            || request.order_type.eq_ignore_ascii_case("FOK"));
-
-    let order_result = if is_marketable_buy {
-        let amount =
-            Amount::usdc(Decimal::from_str("1.00").context("failed to parse $1.00 USDC amount")?)
-                .context("failed to build USDC amount for market order")?;
+    let order_result = if is_marketable_order(request) {
+        let amount = market_order_amount(request)?;
         let price_opt = decimal_from_f64(request.price, "price", 2)?;
-        client
+        let first_result = client
             .market_order()
             .token_id(token_id)
             .side(sdk_side(&request.side))
@@ -243,7 +240,31 @@ pub async fn post_live_order(
             .amount(amount)
             .order_type(order_type)
             .build_sign_and_post(&signer)
-            .await
+            .await;
+
+        match first_result {
+            Err(error)
+                if matches!(request.side, LiveSide::Sell)
+                    && is_fak_liquidity_miss_text(&format!("{error:?} {error}")) =>
+            {
+                warn!(
+                    token_id = %request.token_id,
+                    stale_price = %request.price,
+                    size = %request.size,
+                    order_type = %request.order_type,
+                    "FAK sell missed at stale limit; retrying with SDK-calculated current market price"
+                );
+                client
+                    .market_order()
+                    .token_id(token_id)
+                    .side(sdk_side(&request.side))
+                    .amount(market_order_amount(request)?)
+                    .order_type(sdk_order_type(&request.order_type)?)
+                    .build_sign_and_post(&signer)
+                    .await
+            }
+            other => other,
+        }
     } else {
         let price = decimal_from_f64(request.price, "price", 2)?;
         let size = decimal_from_f64(request.size, "size", 2)?;
@@ -540,6 +561,21 @@ fn sdk_side(side: &LiveSide) -> Side {
     }
 }
 
+fn is_marketable_order(request: &LiveOrderRequest) -> bool {
+    request.order_type.eq_ignore_ascii_case("FAK") || request.order_type.eq_ignore_ascii_case("FOK")
+}
+
+fn market_order_amount(request: &LiveOrderRequest) -> Result<Amount> {
+    match request.side {
+        LiveSide::Buy => {
+            Amount::usdc(Decimal::from_str("1.00").context("failed to parse $1.00 USDC amount")?)
+                .context("failed to build USDC amount for market order")
+        }
+        LiveSide::Sell => Amount::shares(decimal_floor_from_f64(request.size, "size", 2)?)
+            .context("failed to build share amount for market sell order"),
+    }
+}
+
 pub async fn redeem_winnings(settings: &Settings) -> Result<()> {
     if settings.dry_run || !settings.auto_redeem {
         return Ok(());
@@ -584,6 +620,15 @@ fn decimal_from_f64(value: f64, label: &str, decimals: usize) -> Result<Decimal>
 
     Decimal::from_str(trimmed)
         .with_context(|| format!("failed to convert live order {label}={value} to Decimal"))
+}
+
+fn decimal_floor_from_f64(value: f64, label: &str, decimals: usize) -> Result<Decimal> {
+    if !value.is_finite() {
+        bail!("invalid live order {label} {value}");
+    }
+    let scale = 10_f64.powi(decimals as i32);
+    let floored = (value * scale).floor() / scale;
+    decimal_from_f64(floored, label, decimals)
 }
 
 fn decimal_to_f64(value: &Decimal) -> f64 {
@@ -707,6 +752,13 @@ fn guarded_request(
             amount_usd = (size_cents * price_cents) as f64 / 10_000.0;
         }
     }
+    if is_fak && matches!(side, LiveSide::Sell) {
+        size = ((size * 100.0).floor() / 100.0).max(0.0);
+        if size <= 0.0 {
+            bail!("blocked live sell: size rounds to zero ({size})");
+        }
+        amount_usd = price * size;
+    }
     // Keep the legacy 5-share bump for resting order types; FAK is allowed to submit smaller size.
     if !is_fak && size < 5.0 {
         let bumped_amount = price * 5.0;
@@ -743,4 +795,45 @@ fn guarded_request(
         amount_usd,
         order_type: settings.live_order_type.clone(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn request(side: LiveSide, order_type: &str) -> LiveOrderRequest {
+        LiveOrderRequest {
+            token_id: "123".to_string(),
+            market_slug: "btc-updown-5m-1".to_string(),
+            outcome: "Down".to_string(),
+            side,
+            price: 0.36,
+            size: 6.84,
+            amount_usd: 2.46,
+            order_type: order_type.to_string(),
+        }
+    }
+
+    #[test]
+    fn fak_sell_market_orders_size_in_shares() {
+        let amount = market_order_amount(&request(LiveSide::Sell, "FAK")).unwrap();
+
+        assert!(amount.is_shares());
+        assert_eq!(amount.as_inner().to_string(), "6.84");
+    }
+
+    #[test]
+    fn fak_buy_market_orders_keep_exact_one_dollar_cap() {
+        let amount = market_order_amount(&request(LiveSide::Buy, "FAK")).unwrap();
+
+        assert!(amount.is_usdc());
+        assert_eq!(amount.as_inner().to_string(), "1");
+    }
+
+    #[test]
+    fn only_fak_and_fok_use_market_order_path() {
+        assert!(is_marketable_order(&request(LiveSide::Sell, "FAK")));
+        assert!(is_marketable_order(&request(LiveSide::Sell, "fok")));
+        assert!(!is_marketable_order(&request(LiveSide::Sell, "GTC")));
+    }
 }

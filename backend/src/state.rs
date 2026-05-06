@@ -203,6 +203,59 @@ impl BotState {
         );
     }
 
+    pub fn reconcile_position_from_wallet(
+        &mut self,
+        market_slug: &str,
+        outcome: &str,
+        wallet_avg_price: f64,
+        wallet_shares: f64,
+        phase: Option<String>,
+    ) -> bool {
+        if wallet_shares <= 0.0 || wallet_avg_price <= 0.0 {
+            return false;
+        }
+        let key = position_key(market_slug, outcome);
+        let wallet_cost = wallet_avg_price * wallet_shares;
+        let now = now_ms();
+        if let Some(position) = self.bot_positions.get_mut(&key) {
+            let tracked_cost = if position.total_cost_usd > 0.0 {
+                position.total_cost_usd
+            } else {
+                position.avg_entry_price * position.total_shares
+            };
+            let wallet_has_more_shares = wallet_shares > position.total_shares + 0.001;
+            let wallet_has_more_cost = wallet_cost > tracked_cost + 0.01;
+            if !wallet_has_more_shares && !wallet_has_more_cost {
+                return false;
+            }
+            position.avg_entry_price = wallet_avg_price;
+            position.total_shares = wallet_shares;
+            position.total_cost_usd = wallet_cost;
+            position.last_buy_at_ms = now;
+            if position.phase.is_none() {
+                position.phase = phase;
+            }
+            position.confirmation_status = Some("wallet_reconciled".to_string());
+            true
+        } else {
+            self.bot_positions.insert(
+                key,
+                BotPosition {
+                    market_slug: market_slug.to_string(),
+                    outcome: outcome.to_string(),
+                    phase,
+                    avg_entry_price: wallet_avg_price,
+                    total_shares: wallet_shares,
+                    total_cost_usd: wallet_cost,
+                    opened_at_ms: now,
+                    last_buy_at_ms: now,
+                    confirmation_status: Some("wallet_reconciled".to_string()),
+                },
+            );
+            true
+        }
+    }
+
     pub fn record_optimistic_position_with_phase(
         &mut self,
         market_slug: String,
@@ -416,10 +469,103 @@ impl BotState {
     }
 }
 
+pub const WALLET_ZERO_CLEAR_GRACE_MS: i64 = 60_000;
+
 pub fn position_key(market_slug: &str, outcome: &str) -> String {
     format!("{}::{}", market_slug, outcome)
 }
 
+pub fn wallet_zero_clear_grace_active(position: &BotPosition, now_ms: i64, grace_ms: i64) -> bool {
+    if grace_ms <= 0 {
+        return false;
+    }
+    let last_position_activity_ms = position.last_buy_at_ms.max(position.opened_at_ms);
+    now_ms - last_position_activity_ms < grace_ms
+}
+
 pub fn now_ms() -> i64 {
     Utc::now().timestamp_millis()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wallet_reconciliation_updates_bot_state_when_wallet_exposure_is_larger() {
+        let mut state = BotState::default();
+        state.record_position_with_phase(
+            "eth-updown-5m-1".to_string(),
+            "Down".to_string(),
+            0.4763,
+            4.20,
+            Some("same-side-recovery".to_string()),
+        );
+
+        let changed = state.reconcile_position_from_wallet(
+            "eth-updown-5m-1",
+            "Down",
+            0.438,
+            6.8492,
+            Some("wallet-reconciled".to_string()),
+        );
+
+        let position = state
+            .bot_positions
+            .get("eth-updown-5m-1::Down")
+            .expect("position should exist");
+        assert!(changed);
+        assert!((position.total_shares - 6.8492).abs() < 0.0001);
+        assert!((position.avg_entry_price - 0.438).abs() < 0.0001);
+        assert!((position.total_cost_usd - (0.438 * 6.8492)).abs() < 0.0001);
+        assert_eq!(
+            position.confirmation_status.as_deref(),
+            Some("wallet_reconciled")
+        );
+    }
+
+    #[test]
+    fn wallet_reconciliation_does_not_shrink_state_from_lagging_wallet_snapshot() {
+        let mut state = BotState::default();
+        state.record_position_with_phase(
+            "btc-updown-5m-1".to_string(),
+            "Down".to_string(),
+            0.34,
+            5.88,
+            Some("same-side-recovery".to_string()),
+        );
+
+        let changed = state.reconcile_position_from_wallet(
+            "btc-updown-5m-1",
+            "Down",
+            0.30,
+            0.0,
+            Some("wallet-reconciled".to_string()),
+        );
+
+        let position = state
+            .bot_positions
+            .get("btc-updown-5m-1::Down")
+            .expect("position should not be cleared by reconciliation");
+        assert!(!changed);
+        assert!((position.total_shares - 5.88).abs() < 0.0001);
+    }
+
+    #[test]
+    fn wallet_zero_clear_grace_blocks_clearing_recent_buys() {
+        let position = BotPosition {
+            market_slug: "btc-updown-5m-1".to_string(),
+            outcome: "Down".to_string(),
+            phase: Some("phase1".to_string()),
+            avg_entry_price: 0.34,
+            total_shares: 2.94,
+            total_cost_usd: 1.0,
+            opened_at_ms: 1_000,
+            last_buy_at_ms: 10_000,
+            confirmation_status: Some("confirmed".to_string()),
+        };
+
+        assert!(wallet_zero_clear_grace_active(&position, 55_000, 60_000));
+        assert!(!wallet_zero_clear_grace_active(&position, 75_000, 60_000));
+    }
 }

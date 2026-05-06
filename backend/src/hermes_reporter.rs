@@ -199,6 +199,11 @@ impl HermesReporter {
                 exit_code = ?output.status.code(),
                 "hermes process exited with error"
             );
+            if is_hermes_billing_error_text(&stderr, &stdout) {
+                bail!(
+                    "Hermes reporting degraded: provider billing/insufficient-balance error (HTTP 402); trading loop unaffected"
+                );
+            }
             bail!(
                 "hermes exited with code {:?}: {}",
                 output.status.code(),
@@ -245,6 +250,14 @@ fn build_trade_execution_prompt(report_path: &PathBuf, market_slug: &str) -> Str
     )
 }
 
+fn is_hermes_billing_error_text(stderr: &str, stdout: &str) -> bool {
+    let combined = format!("{stderr}\n{stdout}").to_ascii_lowercase();
+    combined.contains("402")
+        || combined.contains("payment required")
+        || combined.contains("insufficient balance")
+        || combined.contains("insufficient-balance")
+}
+
 fn paired_response_path(report_path: &PathBuf, suffix: &str, response_suffix: &str) -> PathBuf {
     report_path.with_file_name(
         report_path
@@ -253,4 +266,22 @@ fn paired_response_path(report_path: &PathBuf, suffix: &str, response_suffix: &s
             .unwrap_or("hermes-report.json")
             .replace(suffix, response_suffix),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detects_provider_balance_errors_from_hermes_output() {
+        assert!(is_hermes_billing_error_text(
+            "Hermes failed: HTTP 402",
+            "Insufficient Balance"
+        ));
+        assert!(is_hermes_billing_error_text(
+            "",
+            "provider returned insufficient balance"
+        ));
+        assert!(!is_hermes_billing_error_text("timeout", "network reset"));
+    }
 }

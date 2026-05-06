@@ -29,7 +29,9 @@ use crate::live::{
 use crate::llm::TradeExecutionReport;
 use crate::polymarket::PolymarketClient;
 use crate::snipe::{WhaleContext, find_phase1_whale_ride_signals, find_phase2_snipe_signals};
-use crate::state::{BotState, ResolutionLock, now_ms};
+use crate::state::{
+    BotState, ResolutionLock, WALLET_ZERO_CLEAR_GRACE_MS, now_ms, wallet_zero_clear_grace_active,
+};
 use crate::strategy::{Decision, StrategyContext, evaluate_strategy};
 
 #[tokio::main]
@@ -822,11 +824,43 @@ async fn run_bot(
                     || !markets
                         .iter()
                         .any(|market| market.slug == wallet_position.market_slug)
-                    || state
-                        .bot_owns_position(&wallet_position.market_slug, &wallet_position.outcome)
                 {
                     continue;
                 }
+
+                if state.bot_owns_position(&wallet_position.market_slug, &wallet_position.outcome) {
+                    if state.reconcile_position_from_wallet(
+                        &wallet_position.market_slug,
+                        &wallet_position.outcome,
+                        wallet_position.avg_price,
+                        wallet_position.size,
+                        Some("wallet-reconciled".to_string()),
+                    ) {
+                        warn!(
+                            market_slug = %wallet_position.market_slug,
+                            outcome = %wallet_position.outcome,
+                            size = %wallet_position.size,
+                            avg_price = %wallet_position.avg_price,
+                            "wallet reconciliation: wallet exposure exceeds bot state; updating tracked position"
+                        );
+                        dashboard_state.write().await.push_activity(
+                            "warn",
+                            "Wallet Position Reconciled",
+                            Some(&format!(
+                                "{} {} wallet size {:.2} @ {:.2}",
+                                wallet_position.outcome,
+                                wallet_position.market_slug,
+                                wallet_position.size,
+                                wallet_position.avg_price
+                            )),
+                        );
+                        if let Err(error) = state.save(&settings.state_path).await {
+                            warn!(%error, "failed to persist reconciled wallet position");
+                        }
+                    }
+                    continue;
+                }
+
                 // Never adopt both sides of the same market. If we already own the
                 // opposite outcome for this market, skip — it creates contradictory
                 // positions and can exceed the $1 cap unintentionally.
@@ -850,9 +884,9 @@ async fn run_bot(
                     avg_price = %wallet_position.avg_price,
                     "wallet reconciliation: adopting active wallet position for TP/exit management"
                 );
-                state.record_position_with_phase(
-                    wallet_position.market_slug.clone(),
-                    wallet_position.outcome.clone(),
+                state.reconcile_position_from_wallet(
+                    &wallet_position.market_slug,
+                    &wallet_position.outcome,
                     wallet_position.avg_price,
                     wallet_position.size,
                     Some("wallet-reconciled".to_string()),
@@ -1469,6 +1503,16 @@ async fn run_bot(
                     .map(|wallet_position| wallet_position.size)
                     .fold(0.0, f64::max);
                 if actual_wallet_shares <= 0.0 {
+                    if wallet_zero_clear_grace_active(&position, now, WALLET_ZERO_CLEAR_GRACE_MS) {
+                        info!(
+                            market_slug = %position.market_slug,
+                            outcome = %position.outcome,
+                            age_since_buy_ms = now - position.last_buy_at_ms.max(position.opened_at_ms),
+                            grace_ms = WALLET_ZERO_CLEAR_GRACE_MS,
+                            "exit reconciliation: wallet has zero shares inside post-buy grace; keeping bot position"
+                        );
+                        continue;
+                    }
                     info!(
                         market_slug = %position.market_slug,
                         outcome = %position.outcome,
@@ -1508,13 +1552,13 @@ async fn run_bot(
                                         position.outcome, position.market_slug
                                     )),
                                 );
-                                if sell_shares >= position.total_shares * 0.995 {
+                                if request.size >= position.total_shares * 0.995 {
                                     state.record_exit(&position.market_slug, &position.outcome);
                                 } else {
                                     state.reduce_position(
                                         &position.market_slug,
                                         &position.outcome,
-                                        sell_shares,
+                                        request.size,
                                     );
                                 }
                                 if let Err(error) = hermes_reporter
@@ -1594,15 +1638,27 @@ async fn run_bot(
                                     warn!(%error, "trade execution LLM report failed");
                                 }
                                 if err_str.contains("balance is not enough") {
-                                    info!(
-                                        "Clearing phantom position (balance 0, likely an unfilled buy order)."
-                                    );
-                                    dashboard_state.write().await.push_activity(
-                                        "info",
-                                        "Phantom Position Cleared",
-                                        Some(&position.market_slug),
-                                    );
-                                    state.record_exit(&position.market_slug, &position.outcome);
+                                    if wallet_zero_clear_grace_active(
+                                        &position,
+                                        now_ms(),
+                                        WALLET_ZERO_CLEAR_GRACE_MS,
+                                    ) {
+                                        info!(
+                                            market_slug = %position.market_slug,
+                                            outcome = %position.outcome,
+                                            "balance-not-enough sell error inside post-buy grace; keeping bot position"
+                                        );
+                                    } else {
+                                        info!(
+                                            "Clearing phantom position (balance 0, likely an unfilled buy order)."
+                                        );
+                                        dashboard_state.write().await.push_activity(
+                                            "info",
+                                            "Phantom Position Cleared",
+                                            Some(&position.market_slug),
+                                        );
+                                        state.record_exit(&position.market_slug, &position.outcome);
+                                    }
                                 }
                             }
                             Err(_timeout) => {
